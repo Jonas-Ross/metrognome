@@ -25,12 +25,49 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Estimate features for one track. Prints one JSON object on stdout.
+    Analyze {
+        /// Artist name. Required unless --track-id is given.
+        #[arg(long)]
+        artist: Option<String>,
+        /// Track title. Required unless --track-id is given.
+        #[arg(long)]
+        title: Option<String>,
+        /// iTunes store track ID. Not a Music.app persistent ID.
+        #[arg(long)]
+        track_id: Option<i64>,
+        /// Opaque string echoed back in the result.
+        #[arg(long)]
+        client_ref: Option<String>,
+        #[command(flatten)]
+        net: NetOpts,
+    },
     /// Download a preview clip and print decoded PCM statistics as JSON.
     Probe {
         /// Direct URL to an audio clip.
         #[arg(long)]
         url: String,
     },
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct NetOpts {
+    /// iTunes API requests per minute. The documented ceiling is around 20;
+    /// raising this risks the address being throttled.
+    #[arg(long, default_value_t = metrognome::ratelimit::DEFAULT_PER_MINUTE)]
+    requests_per_minute: f64,
+    /// How many requests may be issued back to back from idle.
+    #[arg(long, default_value_t = metrognome::ratelimit::DEFAULT_BURST)]
+    burst: f64,
+}
+
+impl From<&NetOpts> for metrognome::AnalyzerConfig {
+    fn from(o: &NetOpts) -> Self {
+        metrognome::AnalyzerConfig {
+            requests_per_minute: o.requests_per_minute,
+            burst: o.burst,
+        }
+    }
 }
 
 fn init_logging(verbose: u8) {
@@ -55,6 +92,30 @@ async fn main() -> Result<()> {
     init_logging(cli.verbose);
 
     match cli.command {
+        Command::Analyze {
+            artist,
+            title,
+            track_id,
+            client_ref,
+            net,
+        } => {
+            let analyzer = metrognome::Analyzer::new(&(&net).into())?;
+            let result = analyzer
+                .analyze(metrognome::Query {
+                    artist,
+                    title,
+                    track_id,
+                    client_ref,
+                })
+                .await;
+            println!("{}", serde_json::to_string(&result)?);
+            // A failed lookup is a reportable result, not a crashed process:
+            // stdout still carries a well-formed object. The exit code is what
+            // a shell caller checks.
+            if result.status != "ok" {
+                std::process::exit(1);
+            }
+        }
         Command::Probe { url } => {
             let client = metrognome::fetch::client()?;
             let bytes = metrognome::fetch::fetch_bytes(&client, &url)

@@ -75,6 +75,40 @@ pub struct KeyEstimate {
     pub alternates: Vec<Alternate>,
 }
 
+/// The store track a query resolved to.
+///
+/// Always returned alongside the features, even when the match is poor, so a
+/// bad match is visible to the caller rather than something they have to infer
+/// from an implausible tempo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrackMatch {
+    /// iTunes store track ID. Not a Music.app persistent ID.
+    pub track_id: i64,
+    /// Artist as the store spells it.
+    pub artist: String,
+    /// Title as the store spells it.
+    pub title: String,
+    /// Album, when the store gave one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    /// ISO-8601 release timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    /// Apple's own genre label, surfaced raw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    /// Preview clip URL. Absent means the track cannot be analyzed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    /// Full track duration in milliseconds, for sanity-checking a match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// 0-1 confidence that this is the track that was asked for.
+    pub match_score: f32,
+    /// True when the match should be treated as a guess.
+    pub uncertain: bool,
+}
+
 /// Audio-derived features.
 ///
 /// Deliberately a struct of options rather than a fixed pair: metrognome is
@@ -104,6 +138,109 @@ pub struct AudioInfo {
     pub silent_fraction: f64,
 }
 
+/// What was asked for.
+///
+/// Doubles as the input line format for `batch`: one JSON object per line.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Query {
+    /// Artist to search for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// Title to search for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// iTunes store track ID, when the caller already has one. Takes priority
+    /// over artist/title, because it identifies rather than describes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_id: Option<i64>,
+    /// Opaque string echoed back untouched.
+    ///
+    /// selecta keys its library on Music.app persistent IDs, which mean nothing
+    /// to the store. This carries one through so a batch result can be matched
+    /// back to its row without relying on output ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_ref: Option<String>,
+}
+
+/// A failure, in the same shape wherever it happens.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnalysisError {
+    /// Stable discriminator; see [`crate::ErrorKind`].
+    pub kind: String,
+    /// Human-readable detail. Not stable; do not parse.
+    pub message: String,
+}
+
+/// One analysis result.
+///
+/// Emitted for both success and failure — `batch` must never drop a row or
+/// abort, so a failure is a result object with `status: "error"`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Analysis {
+    /// See [`SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// DSP version these features were produced by.
+    pub algorithm_version: u32,
+    /// `"ok"` or `"error"`.
+    pub status: String,
+    /// The query this answers, echoed back.
+    pub query: Query,
+    /// The store track that was analyzed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<TrackMatch>,
+    /// What was measured.
+    pub features: Features,
+    /// Properties of the audio the features came from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioInfo>,
+    /// True when this came from the on-disk cache rather than fresh analysis.
+    pub cached: bool,
+    /// Present exactly when `status` is `"error"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<AnalysisError>,
+}
+
+impl Analysis {
+    /// A successful result.
+    pub fn ok(
+        query: Query,
+        track: Option<TrackMatch>,
+        features: Features,
+        audio: AudioInfo,
+    ) -> Self {
+        Analysis {
+            schema_version: SCHEMA_VERSION,
+            algorithm_version: crate::ALGORITHM_VERSION,
+            status: "ok".into(),
+            query,
+            track,
+            features,
+            audio: Some(audio),
+            cached: false,
+            error: None,
+        }
+    }
+
+    /// A failed result. Carries whatever was learned before the failure, so a
+    /// caller can see which track a decode failure was about.
+    pub fn failed(query: Query, track: Option<TrackMatch>, err: &crate::Error) -> Self {
+        Analysis {
+            schema_version: SCHEMA_VERSION,
+            algorithm_version: crate::ALGORITHM_VERSION,
+            status: "error".into(),
+            query,
+            track,
+            features: Features::default(),
+            audio: None,
+            cached: false,
+            error: Some(AnalysisError {
+                kind: err.kind().to_string(),
+                message: err.to_string(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +249,27 @@ mod tests {
     fn features_omit_absent_fields() {
         let json = serde_json::to_string(&Features::default()).unwrap();
         assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn a_batch_line_parses_with_only_the_fields_it_sets() {
+        let q: Query = serde_json::from_str(r#"{"artist":"a","title":"b"}"#).unwrap();
+        assert_eq!(q.artist.as_deref(), Some("a"));
+        assert!(q.track_id.is_none() && q.client_ref.is_none());
+        let q: Query = serde_json::from_str(r#"{"track_id":1,"client_ref":"x"}"#).unwrap();
+        assert_eq!(q.track_id, Some(1));
+        assert_eq!(q.client_ref.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn a_failure_is_a_result_object_carrying_a_stable_kind() {
+        let err = crate::Error::NoPreview { track_id: 5 };
+        let a = Analysis::failed(Query::default(), None, &err);
+        assert_eq!(a.status, "error");
+        assert_eq!(a.error.as_ref().unwrap().kind, "no_preview");
+        assert_eq!(a.schema_version, SCHEMA_VERSION);
+        // Round-trips, so a consumer can deserialize what we emit.
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(serde_json::from_str::<Analysis>(&json).unwrap(), a);
     }
 }

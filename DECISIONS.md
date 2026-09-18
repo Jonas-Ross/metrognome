@@ -101,3 +101,52 @@ all. They multiply, so any one of them can veto. Averaging would let a strong
 comb score on a beatless intro (where the flux is noise and some alignment
 always looks good) report high confidence, which is the single most damaging
 thing this tool could do to a consumer that trusts it.
+
+## 9. Matching is a pure function over parsed results
+
+`pick_best` takes an artist, a title and a slice of already-parsed candidates.
+All the judgement lives there, and the HTTP client only supplies the slice. That
+is what makes the interesting cases — a neutral qualifier, a remix competing
+with its original, a title collision between two different acts — testable from
+fixture JSON with no network in the suite.
+
+The fixtures are hand-authored against the documented response schema rather
+than captured, because the environment this was built in has no route to
+`itunes.apple.com`. Field names and types match; replacing them with real
+captures should need no code change.
+
+## 10. A remix is not the track you asked for
+
+Parenthesized qualifiers are split off the title and scored separately, with a
+short list of *neutral* ones ("radio edit", "remastered", "album version", a
+bare year) stripped because they name a different master of the same
+performance. Everything else — "(Michael Woods Remix)", "(Live)" — counts
+against the match.
+
+The reason is not tidiness: a remix has its own tempo and often its own key, so
+matching one to the other writes wrong feature data into the consumer's library,
+which is worse than writing none. A match below 0.85 is flagged `uncertain`, and
+the matched track's own metadata always comes back so a bad match is visible
+rather than inferred.
+
+## 11. Rate limiting is a token bucket with a small burst, not a fixed delay
+
+Apple documents no number; ~20 requests/minute is the widely reported ceiling,
+and exceeding it gets the address throttled — slower than being polite. The
+limiter defaults to 18/minute with a burst of 5, so a handful of tracks start
+immediately instead of being spaced from a standing start, while the refill rate
+still bounds the long-run average.
+
+The token arithmetic is a pure function over an explicit `now`, so the queueing
+behaviour is unit-tested without sleeping. The bucket is allowed to go negative
+and the debt becomes the wait, which is what makes a queue of concurrent callers
+come out evenly spaced rather than all waking to race for one token.
+
+## 12. Failures are results, not errors
+
+`Analyzer::analyze` never returns `Err`. A failure is an `Analysis` with
+`status: "error"`, the stable `ErrorKind` discriminator, and whatever was
+learned before things went wrong — including the resolved track, so a caller can
+see *which* track failed to decode. `batch` depends on this: one bad row must
+not take the run with it, and a dropped row is worse than a reported failure
+because the caller cannot tell it happened.

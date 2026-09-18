@@ -1,0 +1,53 @@
+{
+  "resultCount": 4,
+  "results": [
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 2000000001,
+      "artistName": "deadmau5",
+      "collectionName": "For Lack of a Better Name",
+      "trackName": "Strobe (Michael Woods Remix)",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/strobe-mw.m4a",
+      "releaseDate": "2010-02-15T12:00:00Z",
+      "trackTimeMillis": 442000,
+      "primaryGenreName": "Dance"
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 2000000002,
+      "artistName": "deadmau5",
+      "collectionName": "For Lack of a Better Name",
+      "trackName": "Strobe (Club Edit)",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/strobe-club.m4a",
+      "releaseDate": "2009-09-22T12:00:00Z",
+      "trackTimeMillis": 386000,
+      "primaryGenreName": "Dance"
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 2000000003,
+      "artistName": "deadmau5",
+      "collectionName": "For Lack of a Better Name",
+      "trackName": "Strobe",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/strobe.m4a",
+      "releaseDate": "2009-09-22T12:00:00Z",
+      "trackTimeMillis": 636000,
+      "primaryGenreName": "Dance"
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 2000000004,
+      "artistName": "Tribute Players",
+      "collectionName": "Electronic Tribute",
+      "trackName": "Strobe (Karaoke Version)",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/strobe-karaoke.m4a",
+      "releaseDate": "2014-01-01T12:00:00Z",
+      "trackTimeMillis": 300000,
+      "primaryGenreName": "Karaoke"
+    }
+  ]
+}

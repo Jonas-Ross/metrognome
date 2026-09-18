@@ -25,6 +25,52 @@ metrognome probe --url https://.../preview.m4a
 - Results are cached on disk by resolved iTunes store track ID, so a track is
   analyzed once.
 
+## Output
+
+Every object carries `schema_version`, and every feature carries its own
+`source` and `confidence` plus an `uncertain` flag, so a consumer can tell a
+measurement from a guess. Features live under `features`, which grows by adding
+optional fields rather than by moving existing ones.
+
+```json
+{
+  "schema_version": 1,
+  "algorithm_version": 1,
+  "status": "ok",
+  "query": { "artist": "Daft Punk", "title": "Around the World" },
+  "track": {
+    "track_id": 1440857781,
+    "artist": "Daft Punk",
+    "title": "Around the World",
+    "album": "Homework",
+    "preview_url": "https://.../preview.m4a",
+    "match_score": 1.0,
+    "uncertain": false
+  },
+  "features": {
+    "tempo": {
+      "bpm": 121.31,
+      "confidence": 0.86,
+      "uncertain": false,
+      "source": "metrognome/onset-autocorrelation-comb@1",
+      "beat_offset_secs": 0.104,
+      "canonical_window_bpm": [90.0, 180.0],
+      "alternates": [{ "value": 60.66, "relation": "half", "score": 1.9 }]
+    }
+  },
+  "audio": { "duration_secs": 30.0, "sample_rate": 44100, "source_channels": 2, "silent_fraction": 0.01 },
+  "cached": false
+}
+```
+
+A failure is the same object with `status: "error"` and an `error` field
+carrying a stable `kind` — never a crash, and never a missing row.
+
+Batch input lines take the same shape as `query`, including an optional
+`client_ref` that is echoed back untouched: selecta keys its library on
+Music.app persistent IDs, which mean nothing to the store, so that field is how
+a result gets matched back to a row.
+
 ## Install
 
 ```
