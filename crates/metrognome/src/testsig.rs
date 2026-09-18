@@ -141,13 +141,26 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
     let sr = sample_rate as f32;
     let beat = 60.0 / bpm * sr;
 
-    let kick = drum_hit(55.0, 0.18, sample_rate, 0.95, 9.0);
+    // A real kick is a pitched body plus a broadband click. The click matters
+    // for more than realism: onset detection works on spectral flux, and a
+    // body-only kick puts all its energy in one or two mel bands, where a
+    // broadband hi-hat would out-flux it and invert the pattern's accent
+    // structure.
+    let kick = {
+        let mut k = drum_hit(55.0, 0.18, sample_rate, 0.95, 9.0);
+        mix_at(&mut k, &noise_burst(0.006, sample_rate, 0.5, &mut noise), 0);
+        k
+    };
     let snare = {
         let mut s = noise_burst(0.12, sample_rate, 0.55, &mut noise);
         mix_at(&mut s, &drum_hit(190.0, 0.08, sample_rate, 0.3, 12.0), 0);
         s
     };
-    let hat = noise_burst(0.035, sample_rate, 0.22, &mut noise);
+    // Closed hats sit far below kick and snare on a real drum bus — roughly
+    // -18 dBFS against -6. Getting that balance right matters for octave tests:
+    // hats that are too loud make a wrong grid that lands on them score as well
+    // as the right grid that lands on kicks.
+    let hat = noise_burst(0.035, sample_rate, 0.10, &mut noise);
 
     let bars = (n as f32 / (beat * 4.0)).ceil() as usize;
     for bar in 0..bars {

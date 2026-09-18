@@ -43,3 +43,61 @@ chromagram, which is more code and more CPU than just sizing the FFT correctly.
 
 Cost: FFT sizes differ between a 44.1 kHz preview and a 48 kHz capture, so
 frame-rate-dependent numbers must never be hardcoded in frames.
+
+## 5. Tempo is reported in a canonical one-octave window (90-180 BPM)
+
+Octave errors are the dominant failure mode in tempo estimation, and the usual
+mitigation — a prior that nudges toward 120 — still leaves a drum & bass track
+free to come back as 87. Instead every candidate is folded by doubling or
+halving until it lands in [90, 180), which holds house (120-128), techno and
+trance (130-145) and drum & bass (170-176) in a single octave. An octave error
+then cannot be *expressed*, only a metric one.
+
+Cost: genuinely slow music is reported at double time — an 85 BPM hip-hop track
+reads as 170. This is the right trade for a library of dance music, and both the
+half and the double are always present in `alternates` so a consumer can
+override. The window is a named constant, not a scattered literal, because a
+different library might want a different octave.
+
+## 6. Scoring: phase-aligned comb filter with a consistency penalty, not raw ACF
+
+Autocorrelation is used only to *propose* candidates. Ranking them is done by
+laying a beat grid over the onset envelope and measuring `mean - stddev` of the
+onset strength at the grid points.
+
+Two things drove this. First, the mean alone is not enough: a grid at 2/3 or 4/5
+of the true tempo can land on *something* every time — a hi-hat rather than a
+kick — and score a competitive mean. Penalizing spread asks for beats that are
+consistently strong, which is what a real tempo gives you. Second, the ACF's own
+peak heights are not comparable across the octave relationships we care about.
+
+Rejected along the way: adding a bar-level term (autocorrelation at four beats)
+on the theory that a real tempo has a real bar. Measured on synthetic grooves it
+fired just as happily on metric decoys, because busy 16th percussion is periodic
+at almost any subdivision. It made one case better and another worse, so it is
+not in.
+
+## 7. Two-stage tempo search: smoothed to find, unsmoothed to judge
+
+The comb score against a raw onset envelope is a knife edge — onsets are one or
+two frames wide, so a 0.03% tempo error already walks the grid off them. No
+practical search step finds that peak. The search therefore runs against an
+envelope smoothed with a 30 ms Hann kernel, which widens the peak into something
+a 0.1% grid can locate.
+
+But smoothing also lifts a wrong grid toward a right one, because it lets quiet
+events bleed into slots where loud ones should be — precisely the distinction
+that separates a true tempo from a 2/3 decoy. So the finalists are rescored on
+the unsmoothed envelope, and the reported BPM comes from a final precision pass
+there too. Measured on synthetic grooves, this restores a 8-37% margin between
+the true tempo and its best decoy, where scoring on the smoothed envelope left
+around 1%.
+
+## 8. Confidence is a product, not an average
+
+Three factors — how far above background the beat grid sits, how much it beats
+the best *unrelated* reading, and how periodic the envelope is at that rate at
+all. They multiply, so any one of them can veto. Averaging would let a strong
+comb score on a beatless intro (where the flux is noise and some alignment
+always looks good) report high confidence, which is the single most damaging
+thing this tool could do to a consumer that trusts it.
