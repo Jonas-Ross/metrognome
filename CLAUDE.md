@@ -79,3 +79,6 @@ CI gates on fmt, clippy with warnings denied, and tests.
 - [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>`, imperative, lowercase, no trailing period.
 - One concern per commit. Keep the build green.
+- Work that depends on an unmerged PR is stacked, not held: branch off that PR's head
+  and open the follow-up against it. `.claude/skills/gh-stack` covers the `gh stack`
+  workflow and where it does and doesn't run. Stacked branches follow the naming above.
