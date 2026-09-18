@@ -294,7 +294,7 @@ Most of `REFERENCE_TRACKS` carries no expected key, and that stays true —
 inventing expectations to make the column look full would make the table more
 authoritative than it is. No expectation means no opinion, not a pass.
 
-## 24. A metrical tie-break, added because the live table asked for it
+## 24. A metrical tie-break, added because the live table asked for it — and withdrawn (see 27)
 
 The first run against real recordings came back 5/10, and the per-row
 diagnostics split the failures cleanly. Every query resolved to the right
@@ -382,3 +382,41 @@ Consequences, all of them about provenance rather than DSP:
   confidence 1.00.
 - Inner City Life still carries no expected key, because the album version and
   the radio edit are published in different keys and the store may serve either.
+
+## 27. Recall in the comb score, replacing the tie-break of entry 24
+
+Entry 24's tie-break did not fire on the live audio, and the reason it did not
+is that the reasoning behind it was wrong. It rested on reading a confidence of
+0.00 as "the two grids scored level". They did not: `rival` in `confidence()`
+deliberately skips candidates that are metrically related to the winner, so a
+confidence of 0.00 says nothing whatsoever about the gap between 90.71 and its
+own 3/2. The gap was simply larger than the 4% the tie-break allowed.
+
+The tie-break is removed rather than widened. Widening it would be tuning a
+threshold until a number came out right, on a rationale already shown to be
+false.
+
+The real defect is in `comb_score`, which only ever measured how good a grid's
+own points are and never charged it for onsets it missed. That is precision
+without recall. A sparse grid is a subset of a dense one's structure, so
+sampling every third beat posts a high mean and a tight spread precisely by
+skipping the beats that would have cost it. The score is now
+`precision * recall`, where recall is the share of onset energy falling within
+30 ms of a beat. Precision punishes a grid that is too fast, because its points
+land on nothing; recall punishes one that is too slow. The window is fixed in
+time rather than as a fraction of the period, or a slow grid would get a
+proportionally wider window and claim the same onsets a fast grid must hit
+precisely — reintroducing the bias.
+
+**Confidence deliberately still reads precision alone.** Recall is genre
+dependent in a way that is not a statement about certainty: a breakbeat with
+sixteenth hats genuinely carries much of its onset energy off the beat grid, and
+folding that into confidence dropped the synthetic drum & bass cases from 0.98
+to 0.57 — a change that would have selecta discarding drum & bass for being
+drum & bass. Recall decides which grid wins. It does not decide how sure we are
+of the winner.
+
+The selftest stays 10/10 with confidences unchanged. Whether this fixes
+Sandstorm is a question only the live run can answer, which is why the
+diagnostics now print each alternate's score: if the right tempo still loses,
+the next run says by how much instead of leaving it to be guessed at again.

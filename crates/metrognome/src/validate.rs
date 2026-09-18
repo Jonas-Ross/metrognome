@@ -182,9 +182,13 @@ pub struct MatchedTrack {
     /// Fraction of the preview below -60 dBFS. A high value means the clip is
     /// an intro, an outro or a breakdown rather than the body of the track.
     pub silent_fraction: f64,
-    /// Tempo alternates that were on offer, best first, as `(bpm, relation)`.
+    /// Tempo alternates that were on offer, best first, as
+    /// `(bpm, relation, score)`. The score is what the grids were ranked on and
+    /// is comparable only within one track — without it a losing alternate
+    /// tells you the right answer was available but not how far off winning it
+    /// was, which is the difference between a near miss and a rout.
     #[serde(default)]
-    pub tempo_alternates: Vec<(f64, String)>,
+    pub tempo_alternates: Vec<(f64, String, f32)>,
 }
 
 impl ValidationRow {
@@ -413,7 +417,7 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             let alts: Vec<String> = m
                 .tempo_alternates
                 .iter()
-                .map(|(bpm, rel)| format!("{bpm:.2} ({rel})"))
+                .map(|(bpm, rel, score)| format!("{bpm:.2} {rel} score {score:.3}"))
                 .collect();
             out.push_str(&format!("    alternates: {}\n", alts.join(", ")));
             // The expected tempo being on the shortlist but not chosen is a
@@ -421,7 +425,7 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             let near = m
                 .tempo_alternates
                 .iter()
-                .any(|(bpm, _)| (*bpm as f32 - r.expected_bpm).abs() <= BPM_TOLERANCE);
+                .any(|(bpm, _, _)| (*bpm as f32 - r.expected_bpm).abs() <= BPM_TOLERANCE);
             out.push_str(&format!(
                 "    expected {:.0} was {} the alternates\n",
                 r.expected_bpm,
@@ -572,7 +576,7 @@ mod tests {
             uncertain: true,
             preview_secs: 30.0,
             silent_fraction: 0.4,
-            tempo_alternates: vec![(155.0, "double".into()), (77.5, "half".into())],
+            tempo_alternates: vec![(155.0, "double".into(), 0.9), (77.5, "half".into(), 0.4)],
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("Inner City Life (Radio Edit)"), "{d}");
@@ -590,7 +594,7 @@ mod tests {
             uncertain: false,
             preview_secs: 30.0,
             silent_fraction: 0.01,
-            tempo_alternates: vec![(174.0, "double".into())],
+            tempo_alternates: vec![(174.0, "double".into(), 0.9)],
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("AMONG the alternates"), "{d}");

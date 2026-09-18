@@ -140,6 +140,7 @@ const CONSISTENCY_PENALTY: f32 = 1.0;
 fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     let none = CombScore {
         score: 0.0,
+        precision: 0.0,
         phase_frames: 0.0,
     };
     if bpm <= 0.0 || env.len() < 2 {
@@ -149,6 +150,10 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     if period < 2.0 || period as usize >= env.len() {
         return none;
     }
+
+    // The envelope is z-scored, so it has negatives. Below-average frames are
+    // quiet, not negative energy, so they clamp to zero for the recall sums.
+    let total: f32 = env.iter().map(|v| v.max(0.0)).sum();
 
     // Half-frame phase steps: finer than the envelope's own resolution, so the
     // phase search never limits the score.
@@ -182,8 +187,15 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
         if mean > best_mean {
             best_mean = mean;
             let sd = (sum_sq / n - mean * mean).max(0.0).sqrt();
+            // Precision: are this grid's own points on strong onsets, and
+            // consistently so? Clamped at zero because a grid whose spread
+            // exceeds its level has nothing to say, and a negative here would
+            // inverted-multiply with recall below.
+            let precision = (mean - CONSISTENCY_PENALTY * sd).max(0.0);
+            let score = precision * recall(env, fps, period, phase, total);
             best = CombScore {
-                score: mean - CONSISTENCY_PENALTY * sd,
+                score,
+                precision,
                 phase_frames: phase,
             };
         }
@@ -191,10 +203,52 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     best
 }
 
+/// Share of the envelope's onset energy that falls on this grid.
+///
+/// The other half of the trade that `precision` makes. Precision alone punishes
+/// a grid that is too *fast*, because half its points land on nothing. Nothing
+/// punished a grid that was too *slow*: a sparse grid is a subset of a dense
+/// one's structure, so sampling every third beat of a real groove posts a high
+/// mean and a tight spread precisely by skipping the beats that would have cost
+/// it. Recall charges for those skipped beats, and the product is an ordinary
+/// precision-recall balance.
+///
+/// Measured need: Sandstorm's preview reads 90.71 against a true 136.07 —
+/// exactly 2/3 — with the true tempo already on the shortlist and losing.
+fn recall(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let half_width = EXPLAIN_HALF_WIDTH_SECS * fps;
+    let mut captured = 0.0f32;
+    for (i, v) in env.iter().enumerate() {
+        let v = v.max(0.0);
+        if v <= 0.0 {
+            continue;
+        }
+        // Distance to the nearest grid line, in frames.
+        let beats = (i as f32 - phase) / period;
+        let dist = (beats - beats.round()).abs() * period;
+        if dist <= half_width {
+            captured += v;
+        }
+    }
+    (captured / total).clamp(0.0, 1.0)
+}
+
 /// A beat grid's fit at one tempo.
 #[derive(Debug, Clone, Copy)]
 struct CombScore {
+    /// Ranking score: precision times recall. Only ever compared against other
+    /// candidates on the same audio.
     score: f32,
+    /// The precision half alone. Confidence reads this rather than `score`,
+    /// because recall is structurally genre-dependent — a breakbeat with
+    /// sixteenth hats genuinely carries much of its onset energy off the beat
+    /// grid, and letting that drag its confidence down would have selecta
+    /// discarding drum & bass for being drum & bass. Recall decides *which*
+    /// grid wins; it should not decide how sure we are of the winner.
+    precision: f32,
     phase_frames: f32,
 }
 
@@ -244,6 +298,7 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
     let mut best = Candidate {
         bpm: coarse_bpm,
         score: c.score,
+        precision: c.precision,
         phase_frames: c.phase_frames,
     };
     if clip_beats < 4.0 {
@@ -262,6 +317,7 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
             best = Candidate {
                 bpm,
                 score: c.score,
+                precision: c.precision,
                 phase_frames: c.phase_frames,
             };
         }
@@ -274,6 +330,7 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
 struct Candidate {
     bpm: f32,
     score: f32,
+    precision: f32,
     phase_frames: f32,
 }
 
@@ -327,49 +384,14 @@ fn metrically_related(a: f32, b: f32) -> bool {
     RATIOS.iter().any(|r| (a / b - r).abs() < 0.03 * r.max(1.0))
 }
 
-/// How close a faster metrically-related finalist must score to the leader
-/// before it is preferred.
+/// Half-width of the window in which a beat counts as explaining an onset.
 ///
-/// Measured on real previews, not chosen by feel. Sandstorm read 90.71 against
-/// a true 136.07, exactly 2/3; Brown Paper Bag read 97.22 against a true
-/// 170.03. In both the true tempo was already a finalist and lost by a hair —
-/// both estimates came back with a confidence of 0.00, which *is* the margin
-/// between leader and rival, so the two grids scored essentially level.
-///
-/// A sparse grid is a subset of a dense one's structure: sampling every third
-/// beat of a real groove can post a high mean and a low spread precisely
-/// because it skips the beats that would have cost it. Nothing in `comb_score`
-/// charges for the beats such a grid declines to explain, so a level score
-/// between two metrically-related grids is not really level, and the faster
-/// one is the better answer.
-///
-/// Kept deliberately tight. At 4% it only fires where the estimator is already
-/// reporting that it cannot tell the two apart, so it cannot overturn a
-/// confident correct reading.
-const METRICAL_TIE_MARGIN: f32 = 0.04;
-
-/// Choose between finalists that are metrically related and scored level.
-///
-/// Returns the leader unless a faster, metrically-related finalist is within
-/// [`METRICAL_TIE_MARGIN`] of it, in which case that one wins. See the
-/// constant for why level does not mean equal here.
-fn break_metrical_tie(scored: &[Candidate]) -> Candidate {
-    let leader = scored[0];
-    if leader.score <= 0.0 {
-        return leader;
-    }
-    let threshold = leader.score * (1.0 - METRICAL_TIE_MARGIN);
-    scored
-        .iter()
-        .filter(|c| {
-            c.bpm > leader.bpm && c.score >= threshold && metrically_related(c.bpm, leader.bpm)
-        })
-        // The fastest qualifying grid, not merely the next one up: 2/3 and 4/3
-        // of the same truth can both be on the shortlist.
-        .max_by(|a, b| a.bpm.total_cmp(&b.bpm))
-        .copied()
-        .unwrap_or(leader)
-}
+/// Fixed in time, not as a fraction of the beat period. A fraction would hand a
+/// slow grid a proportionally wider window and let it claim the same onsets a
+/// fast grid has to hit precisely, which is the exact bias `recall` exists to
+/// remove. 30 ms is roughly the perceptual tolerance for "on the beat" and
+/// comfortably wider than the onset envelope's own smearing.
+const EXPLAIN_HALF_WIDTH_SECS: f32 = 0.030;
 
 /// Estimate tempo from an onset strength envelope.
 pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
@@ -399,13 +421,14 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         c.bpm = precision_pass(&env.values, fps, c.bpm);
         let raw = comb_score(&env.values, fps, c.bpm);
         c.score = raw.score;
+        c.precision = raw.precision;
         c.phase_frames = raw.phase_frames;
     }
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
     for c in &scored {
         tracing::debug!(bpm = c.bpm, score = c.score, "tempo candidate");
     }
-    let best = break_metrical_tie(&scored);
+    let best = scored[0];
 
     // The strongest reading that is not just the chosen tempo re-expressed.
     let rival = scored[1..]
@@ -415,7 +438,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         .unwrap_or(0.0);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
-    let confidence = confidence(best.score, rival, periodicity, observed_beats);
+    let confidence = confidence(best.precision, rival, periodicity, observed_beats);
 
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
@@ -489,6 +512,8 @@ const COVERAGE_SATURATION: f32 = 32.0;
 /// Multiplicative rather than averaged: each factor can veto on its own, which
 /// is the behaviour we want. A clip with no beat at all must not score well
 /// just because whatever it found was unrivalled.
+/// `best` is the winner's *precision*, not its ranking score. See
+/// [`CombScore::precision`].
 fn confidence(best: f32, rival: f32, periodicity: f32, observed_beats: f32) -> f32 {
     // How far above background the weakest beats in the grid sit.
     let clarity = (best / CLARITY_SATURATION).clamp(0.0, 1.0);
@@ -724,42 +749,32 @@ mod repro_tests {
     use super::*;
     use crate::testsig::{self, Groove};
 
-    fn candidate(bpm: f32, score: f32) -> Candidate {
-        Candidate {
-            bpm,
-            score,
-            phase_frames: 0.0,
+    /// A grid that lands on every onset scores above one that lands on two
+    /// thirds of them, even when the sparse grid's own points are just as
+    /// strong. This is the Sandstorm failure in miniature: 2/3 of 136 has
+    /// period 1.5 beats, so it alternates between a kick and an offbeat stab
+    /// and its points look excellent — while a third of the pattern goes
+    /// unexplained.
+    #[test]
+    fn a_sparse_grid_cannot_win_on_tidiness_alone() {
+        let fps = 100.0;
+        let bpm = 136.0;
+        let period = 60.0 * fps / bpm;
+        // Impulses on every beat and every offbeat, all the same height.
+        let mut env = vec![0.0f32; 3000];
+        let mut t = 0.0;
+        while (t as usize) < env.len() {
+            env[t as usize] = 1.0;
+            t += period / 2.0;
         }
-    }
-
-    #[test]
-    fn a_level_score_against_a_faster_related_grid_goes_to_the_faster() {
-        // Sandstorm's shape: the true 136.07 was a finalist and lost to exactly
-        // 2/3 of it by a hair. A sparse grid is a subset of a dense one's
-        // structure, so level is not really level.
-        let scored = vec![candidate(90.71, 1.000), candidate(136.07, 0.985)];
-        assert_eq!(break_metrical_tie(&scored).bpm, 136.07);
-    }
-
-    #[test]
-    fn a_clear_win_is_not_overturned() {
-        // 8% back is not a tie. The leader stands.
-        let scored = vec![candidate(90.71, 1.000), candidate(136.07, 0.920)];
-        assert_eq!(break_metrical_tie(&scored).bpm, 90.71);
-    }
-
-    #[test]
-    fn an_unrelated_tempo_never_wins_the_tie_break() {
-        // 1.33x apart is metrical; 1.21x is not anything, so it is a different
-        // reading rather than the same one counted differently.
-        let scored = vec![candidate(120.0, 1.000), candidate(145.0, 0.995)];
-        assert_eq!(break_metrical_tie(&scored).bpm, 120.0);
-    }
-
-    #[test]
-    fn the_tie_break_never_reaches_for_a_slower_grid() {
-        let scored = vec![candidate(136.0, 1.000), candidate(90.67, 0.999)];
-        assert_eq!(break_metrical_tie(&scored).bpm, 136.0);
+        let truth = comb_score(&env, fps, bpm);
+        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0);
+        assert!(
+            truth.score > sparse.score,
+            "true {} vs 2/3 {}",
+            truth.score,
+            sparse.score
+        );
     }
 
     #[test]

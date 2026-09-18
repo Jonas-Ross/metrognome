@@ -237,7 +237,7 @@ async fn main() -> Result<()> {
                             .map(|t| {
                                 t.alternates
                                     .iter()
-                                    .map(|a| (a.value, a.relation.clone()))
+                                    .map(|a| (a.value, a.relation.clone(), a.score))
                                     .collect()
                             })
                             .unwrap_or_default(),
