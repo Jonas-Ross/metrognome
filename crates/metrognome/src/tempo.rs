@@ -386,7 +386,10 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // but lifts a wrong grid landing on quiet events toward the right one, so
     // the final comparison goes without it.
     for c in scored.iter_mut() {
-        c.bpm = precision_pass(&env.values, fps, c.bpm);
+        // Folded again: the precision pass runs after refine's window check
+        // and can walk a candidate back out. The rescore below runs on the
+        // folded tempo, so score and phase stay consistent with it.
+        c.bpm = fold_to_canonical(precision_pass(&env.values, fps, c.bpm));
         let raw = comb_score(&env.values, fps, c.bpm);
         c.score = raw.score;
         c.mean = raw.mean;
@@ -461,8 +464,12 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // the analysis window, so the raw phase runs early by a fixed latency.
     let beat_offset = (best.phase_frames / fps + env.latency_secs).max(0.0);
 
+    // Rounding to two places can push a tempo just under the top edge over it,
+    // so the reported number is clamped to the window rather than the reverse.
+    let bpm = round2(best.bpm).clamp(CANONICAL_LOW_BPM, CANONICAL_HIGH_BPM - 0.01);
+
     Some(TempoEstimate {
-        bpm: round2(best.bpm),
+        bpm,
         confidence,
         uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
         source: TEMPO_SOURCE.into(),
@@ -782,6 +789,21 @@ mod tests {
                     est.bpm
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_reported_tempo_never_leaves_the_window_it_declares() {
+        // The precision pass runs after refine's clamp, so it can walk a
+        // candidate back out of the window the payload still advertises. A
+        // consumer folding on the declared window would double-fold it.
+        for bpm in [90.0, 90.2, 179.0, 179.8] {
+            let est = tempo_of(&testsig::click_track(bpm, 20.0, SR));
+            assert!(
+                est.bpm >= CANONICAL_LOW_BPM && est.bpm < CANONICAL_HIGH_BPM,
+                "{bpm} reported {} outside [{CANONICAL_LOW_BPM}, {CANONICAL_HIGH_BPM})",
+                est.bpm
+            );
         }
     }
 
