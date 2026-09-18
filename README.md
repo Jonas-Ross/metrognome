@@ -15,6 +15,9 @@ metrognome analyze --artist "Daft Punk" --title "Around the World"
 metrognome analyze --track-id 1440857781
 metrognome batch < tracks.jsonl > results.jsonl
 metrognome probe --url https://.../preview.m4a
+
+metrognome selftest   # accuracy check against synthesized audio, no network
+metrognome validate   # accuracy check against known tracks, needs network
 ```
 
 - `analyze` prints exactly one JSON object on stdout.
@@ -49,14 +52,26 @@ optional fields rather than by moving existing ones.
     "uncertain": false
   },
   "features": {
+    "key": {
+      "key": "A minor",
+      "tonic": "A",
+      "mode": "minor",
+      "camelot": "8A",
+      "confidence": 0.79,
+      "uncertain": false,
+      "source": "metrognome/chroma-correlation-edm@1",
+      "alternates": [
+        { "value": 8.0, "label": "C major (8B)", "relation": "relative_major", "score": 0.681 }
+      ]
+    },
     "tempo": {
-      "bpm": 121.31,
+      "bpm": 121.0,
       "confidence": 0.86,
       "uncertain": false,
       "source": "metrognome/onset-autocorrelation-comb@1",
-      "beat_offset_secs": 0.104,
+      "beat_offset_secs": 0.496,
       "canonical_window_bpm": [90.0, 180.0],
-      "alternates": [{ "value": 60.66, "relation": "half", "score": 1.9 }]
+      "alternates": [{ "value": 60.5, "relation": "half", "score": 5.109 }]
     }
   },
   "audio": { "duration_secs": 30.0, "sample_rate": 44100, "source_channels": 2, "silent_fraction": 0.01 },
@@ -105,6 +120,24 @@ correlated against EDM-weighted profiles by default;
 
 Every estimate carries a 0-1 confidence. Previews are sometimes a beatless intro
 or a breakdown, and a low confidence score is the estimator telling you so.
+
+Two commands check accuracy, and both print a markdown table to **stderr** with
+a machine-readable report on stdout:
+
+- `metrognome selftest` runs against synthesized audio carrying the traps each
+  idiom actually has — offbeat hats that read as double time, a breakbeat snare
+  period that reads as half time. No network, and it gates CI.
+- `metrognome validate` runs the same check against ten well-known electronic
+  releases with widely documented tempos, spanning house, techno and drum &
+  bass. This is the one that tells you whether octave handling survives contact
+  with real recordings.
+
+```
+$ metrognome selftest
+| Track | Genre | Expected BPM | Estimated BPM | Verdict | Tempo conf. | ... |
+| synthetic four-on-the-floor 124 | house       | 124 | 124.00 | ok |  1.00 | ... |
+| synthetic breakbeat 174         | drum & bass | 174 | 174.00 | ok |  0.98 | ... |
+```
 
 ## License
 

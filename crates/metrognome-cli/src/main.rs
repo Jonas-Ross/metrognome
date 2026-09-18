@@ -60,6 +60,28 @@ enum Command {
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Analyze a set of well-known electronic tracks with documented tempos
+    /// and report expected versus estimated.
+    ///
+    /// Needs the network. The machine-readable report goes to stdout as usual;
+    /// the human-readable table goes to stderr, so stdout stays parseable.
+    Validate {
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+    /// Run the same accuracy check against synthesized audio. No network.
+    ///
+    /// Covers the same tempo range as `validate`, with the octave and metric
+    /// traps each idiom actually has, so a regression in octave handling shows
+    /// up without touching Apple.
+    Selftest {
+        /// Sample rate to synthesize at.
+        #[arg(long, default_value_t = 44_100)]
+        sample_rate: u32,
+        /// Key profile set: `edm` (default) or `krumhansl`.
+        #[arg(long, default_value = "edm", value_parser = parse_key_profile)]
+        key_profile: KeyProfile,
+    },
     /// Download a preview clip and print decoded PCM statistics as JSON.
     Probe {
         /// Direct URL to an audio clip.
@@ -178,6 +200,40 @@ async fn main() -> Result<()> {
             batch(concurrency.max(1), &opts).await?;
         }
 
+        Command::Validate { opts } => {
+            let analyzer = opts.analyzer()?;
+            let mut rows = Vec::new();
+            for t in metrognome::validate::REFERENCE_TRACKS {
+                tracing::info!(artist = t.artist, title = t.title, "validating");
+                let result = analyzer
+                    .analyze(Query {
+                        artist: Some(t.artist.to_string()),
+                        title: Some(t.title.to_string()),
+                        ..Default::default()
+                    })
+                    .await;
+                let mut row = metrognome::validate::row(
+                    format!("{} — {}", t.artist, t.title),
+                    t.genre,
+                    t.expected_bpm,
+                    t.expected_key,
+                    &result.features,
+                );
+                row.error = result.error.map(|e| format!("{}: {}", e.kind, e.message));
+                rows.push(row);
+            }
+            report(&rows)?;
+        }
+
+        Command::Selftest {
+            sample_rate,
+            key_profile,
+        } => {
+            let rows =
+                metrognome::validate::selftest(sample_rate, &AnalysisOptions { key_profile });
+            report(&rows)?;
+        }
+
         Command::Probe { url } => {
             let client = metrognome::fetch::client()?;
             let bytes = metrognome::fetch::fetch_bytes(&client, &url)
@@ -197,6 +253,43 @@ async fn main() -> Result<()> {
             });
             println!("{}", serde_json::to_string(&out)?);
         }
+    }
+    Ok(())
+}
+
+/// Print a validation report: JSON on stdout, the table on stderr.
+///
+/// The split keeps the "stdout is JSON only" rule intact even for a command
+/// whose whole point is to be read by a person.
+fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
+    eprintln!("\n{}", metrognome::validate::render_table(rows));
+    let failures = rows
+        .iter()
+        .filter(|r| r.verdict != metrognome::validate::Verdict::Ok)
+        .count();
+    eprintln!(
+        "{} of {} within {} BPM",
+        rows.len() - failures,
+        rows.len(),
+        metrognome::validate::BPM_TOLERANCE
+    );
+    // The table has no room for an error message, and "no estimate" without a
+    // reason is the least useful thing a validation run could tell you.
+    for r in rows.iter().filter(|r| r.error.is_some()) {
+        eprintln!("  {}: {}", r.label, r.error.as_deref().unwrap_or_default());
+    }
+    eprintln!();
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": metrognome::SCHEMA_VERSION,
+            "algorithm_version": metrognome::ALGORITHM_VERSION,
+            "rows": rows,
+            "failures": failures,
+        }))?
+    );
+    if failures > 0 {
+        std::process::exit(1);
     }
     Ok(())
 }

@@ -29,6 +29,7 @@ pub mod resolve;
 pub mod tempo;
 pub mod testsig;
 pub mod types;
+pub mod validate;
 
 pub use decode::{decode_bytes, Pcm, PcmStats};
 pub use error::{Error, ErrorKind, Result};

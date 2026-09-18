@@ -222,3 +222,37 @@ alignment.
 `client_ref` exists for the consumers that would rather not rely on position at
 all: selecta keys its library on Music.app persistent IDs, which mean nothing to
 the store, and this carries one through untouched.
+
+## 19. Key confidence needs a tonality gate, because correlation cannot see one
+
+Pearson correlation is invariant to scale and offset. A chroma that is
+essentially flat with a 2% ripple correlates with a key profile exactly as well
+as one with unmistakable tonal peaks — which is how a click track came back as
+B minor at 0.65 confidence during the first validation run. The profile fit was
+genuinely good; there was simply nothing there for it to fit.
+
+Confidence therefore multiplies the profile fit by a gate on chroma salience
+(standard deviation over mean), ramping from 0.15 to 0.55. Measured on
+synthetic material: sustained chords 0.92-1.00, a full arrangement 0.83, drums
+alone 0.20-0.25, white noise 0.005. The gate is deliberately a multiplier rather
+than another exponent factor — below the floor there is no tonal content to have
+an opinion about, however well the profiles happen to fit.
+
+## 20. Two validation commands, and the table goes to stderr
+
+`selftest` runs the accuracy check against synthesized audio and needs nothing;
+it gates CI, where an octave or metric regression would otherwise go unnoticed
+until someone ran the real thing. `validate` runs the same check against ten
+well-known releases with widely documented tempos across house, techno and drum
+& bass, which is where octave handling meets real recordings.
+
+Both print the human-readable table to **stderr** and a machine-readable report
+to stdout. It would be easier to print the table on stdout, but "stdout is JSON
+only" is worth more as a rule with no exceptions than as a rule with one
+reasonable-sounding one.
+
+Reference tempos are the commonly cited figures and sources disagree by a BPM or
+two, so the tolerance is 2 BPM and the verdict column names *how* an estimate is
+wrong — `OCTAVE`, `METRIC`, `wrong` — rather than just that it is. An octave
+error appearing there would mean the canonical fold is not doing its job, which
+is a different bug from a scoring one.

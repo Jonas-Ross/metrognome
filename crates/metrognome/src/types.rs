@@ -26,8 +26,13 @@ pub const UNCERTAIN_AT_OR_BELOW: f32 = 0.5;
 /// One alternate reading of a feature, with how it relates to the chosen one.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Alternate {
-    /// The alternate value, in the same units as the chosen one.
+    /// The alternate as a number: BPM for tempo, Camelot position for key
+    /// (so wheel distance is arithmetic rather than string parsing).
     pub value: f64,
+    /// Display form, when the number alone does not identify the alternate.
+    /// Absent for tempo, where the number is the whole answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Relation to the chosen value, e.g. `"half"`, `"double"`, `"relative_minor"`.
     pub relation: String,
     /// Raw score, comparable only against other alternates in the same list.

@@ -97,6 +97,31 @@ pub struct Chromagram {
     pub frames: usize,
 }
 
+impl Chromagram {
+    /// How far the chroma departs from flat, relative to its own level.
+    ///
+    /// This is the one thing profile correlation cannot see. Pearson
+    /// correlation is invariant to scale and offset, so a chroma that is
+    /// essentially flat with a 2% ripple correlates with a key profile exactly
+    /// as well as one with unmistakable tonal peaks — which is how a click
+    /// track ends up reported as B minor. Measured on synthetic material:
+    /// sustained chords land near 1.0, drums alone near 0.2, white noise near
+    /// 0.005.
+    pub fn salience(&self) -> f32 {
+        let mean = self.bins.iter().sum::<f32>() / 12.0;
+        if mean <= 1e-9 {
+            return 0.0;
+        }
+        let var = self
+            .bins
+            .iter()
+            .map(|v| (v - mean) * (v - mean))
+            .sum::<f32>()
+            / 12.0;
+        var.sqrt() / mean
+    }
+}
+
 /// Build a chromagram from a chroma-sized magnitude spectrogram.
 ///
 /// Each frame is normalized to unit sum before accumulation, so a loud drop and
@@ -196,6 +221,19 @@ const KEY_CORRELATION_SATURATION: f32 = 0.75;
 /// within 0.05 of each other. A tenth is a real separation.
 const KEY_MARGIN_SATURATION: f32 = 0.10;
 
+/// Chroma salience below which a clip is treated as having no tonal content.
+///
+/// Measured percussion sits at 0.20-0.25 and white noise near 0.005, so a floor
+/// here zeroes out the confidence of anything that is only drums.
+const TONALITY_FLOOR: f32 = 0.15;
+
+/// Salience at which tonal content is no longer in doubt.
+///
+/// Sustained chords measure around 1.0 and a full arrangement around 0.8. This
+/// sits well below both so that a real track carrying heavy percussion is not
+/// penalized for it, while a percussive clip cannot climb out.
+const TONALITY_SATURATION: f32 = 0.55;
+
 /// How `other` relates to the chosen key, for the alternates list.
 fn relation(tonic: usize, minor: bool, other_tonic: usize, other_minor: bool) -> &'static str {
     let interval = (other_tonic + 12 - tonic) % 12;
@@ -240,22 +278,29 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
 
     let strength = (r1 / KEY_CORRELATION_SATURATION).clamp(0.0, 1.0);
     let margin = ((r1 - r2) / KEY_MARGIN_SATURATION).clamp(0.0, 1.0);
-    // Both factors matter and neither substitutes for the other: a strong
+    // A gate rather than another factor: below the floor there is nothing
+    // tonal to have an opinion about, however well the profiles happen to fit.
+    let tonality = ((chroma.salience() - TONALITY_FLOOR) / (TONALITY_SATURATION - TONALITY_FLOOR))
+        .clamp(0.0, 1.0);
+    // Strength and margin neither substitute for the other: a strong
     // correlation that ties with the relative minor is still a coin flip, and a
     // clear winner among uniformly weak correlations is noise.
-    let confidence = strength.sqrt() * margin.sqrt();
+    let confidence = strength.sqrt() * margin.sqrt() * tonality;
 
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
         .iter()
         .map(|&(score, t, m)| Alternate {
+            // The Camelot number, so wheel distance is arithmetic. The letter
+            // and the key name live in the label.
             value: f64::from(camelot_number_major(if m { (t + 3) % 12 } else { t })),
-            relation: format!(
+            label: Some(format!(
                 "{} {} ({})",
                 PITCH_NAMES[t],
                 if m { "minor" } else { "major" },
-                relation(tonic, is_minor, t, m)
-            ),
+                camelot(t, m)
+            )),
+            relation: relation(tonic, is_minor, t, m).to_string(),
             score: (score * 1000.0).round() / 1000.0,
         })
         .collect();
@@ -367,13 +412,16 @@ mod tests {
     fn the_relative_key_shows_up_as_a_named_alternate() {
         let sig = testsig::chord_progression(0, Quality::Major, 12.0, SR);
         let est = key_of(&sig, KeyProfile::Edm).unwrap();
-        assert!(
-            est.alternates
-                .iter()
-                .any(|a| a.relation.contains("A minor")),
-            "{:?}",
-            est.alternates
-        );
+        let rel = est
+            .alternates
+            .iter()
+            .find(|a| a.relation == "relative_minor")
+            .unwrap_or_else(|| panic!("no relative minor in {:?}", est.alternates));
+        assert_eq!(rel.label.as_deref(), Some("A minor (8A)"));
+        // The Camelot number is the numeric value, so wheel distance is
+        // arithmetic: a relative key shares its number with the chosen one.
+        assert_eq!(rel.value, 8.0);
+        assert!(est.camelot.starts_with('8'));
     }
 
     #[test]
@@ -386,6 +434,39 @@ mod tests {
                 "percussion must not read as a confident key: {est:?}"
             ),
         }
+    }
+
+    #[test]
+    fn a_click_track_does_not_produce_a_confident_key() {
+        // Broadband clicks correlate with a key profile about as well as
+        // anything does, because correlation cannot see how flat the chroma is.
+        // The tonality gate is what stops this reading as a real key.
+        let sig = testsig::click_track(122.0, 20.0, SR);
+        match key_of(&sig, KeyProfile::Edm) {
+            None => {}
+            Some(est) => assert!(est.uncertain, "click track read as a key: {est:?}"),
+        }
+    }
+
+    #[test]
+    fn salience_separates_tonal_material_from_percussion() {
+        let stft = Stft::for_chroma(SR);
+        let chords = chromagram(
+            &stft.magnitudes(&testsig::chord_progression(0, Quality::Major, 12.0, SR), SR),
+        );
+        let drums = chromagram(
+            &stft.magnitudes(&testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor), SR),
+        );
+        assert!(
+            chords.salience() > TONALITY_SATURATION,
+            "{}",
+            chords.salience()
+        );
+        assert!(
+            drums.salience() < TONALITY_FLOOR + 0.15,
+            "{}",
+            drums.salience()
+        );
     }
 
     #[test]

@@ -24,3 +24,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Accuracy selftest
+        # Synthesizes and analyzes ten 30-second clips, so it runs in release
+        # and is marked #[ignore] for the normal suite. It is the gate that
+        # catches an octave or metric regression in tempo estimation.
+        run: cargo test --workspace --release -- --ignored

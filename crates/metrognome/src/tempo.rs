@@ -378,17 +378,32 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // and a consumer analyzing downtempo material will want to overrule it.
     alternates.push(Alternate {
         value: f64::from(round2(best.bpm / 2.0)),
+        label: None,
         relation: "half".into(),
         score: round3(comb_score(&env.values, fps, best.bpm / 2.0).score),
     });
     alternates.push(Alternate {
         value: f64::from(round2(best.bpm * 2.0)),
+        label: None,
         relation: "double".into(),
         score: round3(comb_score(&env.values, fps, best.bpm * 2.0).score),
     });
-    for c in scored.iter().skip(1).take(3) {
+    // The finalists converge from several seeds onto the same few tempos, so
+    // report distinct readings rather than the same number three times.
+    for c in scored.iter().skip(1) {
+        if alternates.len() >= 5 {
+            break;
+        }
+        let bpm = round2(c.bpm);
+        if alternates
+            .iter()
+            .any(|a| (a.value - f64::from(bpm)).abs() < 0.5)
+        {
+            continue;
+        }
         alternates.push(Alternate {
-            value: f64::from(round2(c.bpm)),
+            value: f64::from(bpm),
+            label: None,
             relation: "runner_up".into(),
             score: round3(c.score),
         });
@@ -555,6 +570,23 @@ mod tests {
             .expect("half alternate");
         assert!((half.value - 87.0).abs() < 1.0, "got {}", half.value);
         assert_eq!(est.canonical_window_bpm, [90.0, 180.0]);
+
+        // Several candidate seeds converge on the same tempo; the list the
+        // consumer sees must not repeat it.
+        let mut values: Vec<i64> = est
+            .alternates
+            .iter()
+            .map(|a| (a.value * 2.0) as i64)
+            .collect();
+        values.sort_unstable();
+        let before = values.len();
+        values.dedup();
+        assert_eq!(
+            values.len(),
+            before,
+            "duplicate alternates: {:?}",
+            est.alternates
+        );
     }
 
     #[test]
@@ -588,6 +620,25 @@ mod tests {
                 "a pure tone must not read as a confident tempo: {est:?}"
             ),
         }
+    }
+
+    #[test]
+    fn a_preview_that_opens_with_a_beatless_intro_still_reports_its_tempo() {
+        // Previews often start on an intro or a breakdown. The estimate should
+        // survive on the half that has a beat, and say it is less sure.
+        let beats = testsig::groove(128.0, 15.0, SR, Groove::FourOnFloor);
+        let mut sig = testsig::sine(220.0, 15.0, SR);
+        sig.extend(beats);
+        let est = tempo_of(&sig);
+        assert!((est.bpm - 128.0).abs() < 1.0, "got {}", est.bpm);
+
+        let clean = tempo_of(&testsig::groove(128.0, 30.0, SR, Groove::FourOnFloor));
+        assert!(
+            est.confidence < clean.confidence,
+            "half-intro {} should be less certain than clean {}",
+            est.confidence,
+            clean.confidence
+        );
     }
 
     #[test]
