@@ -98,6 +98,10 @@ makes the classic 87-vs-174 drum & bass error impossible at the cost of
 reporting genuinely slow music at double time. Alternates are always included so
 a consumer can override.
 
+Key comes out in both standard notation and Camelot (`"F minor"`, `"4A"`),
+correlated against EDM-weighted profiles by default;
+`--key-profile krumhansl` switches to the classical Krumhansl-Schmuckler set.
+
 Every estimate carries a 0-1 confidence. Previews are sometimes a beatless intro
 or a breakdown, and a low confidence score is the estimator telling you so.
 

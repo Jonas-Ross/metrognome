@@ -26,10 +26,29 @@ const ONSET_HOP_DIVISOR: usize = 8;
 
 /// Analysis window for chroma.
 ///
-/// ~90 ms (4096 samples at 44.1 kHz), double the onset window: key detection
-/// needs frequency resolution — 10.8 Hz, enough to separate adjacent semitones
-/// from about C2 up — and has no use for sharp time resolution.
-const CHROMA_WINDOW_SECS: f32 = 0.090;
+/// Analysis window for chroma.
+///
+/// ~185 ms (8192 samples at 44.1 kHz), four times the onset window. Key
+/// detection trades time resolution for frequency resolution without regret:
+/// 5.4 Hz bins are what make adjacent semitones separable from A2 (110 Hz)
+/// upward, which is where [`CHROMA_FMIN`] comes from. At the onset window's
+/// 46 ms the bins are 21.5 Hz wide and a whole octave of the bass register
+/// collapses into one bin.
+const CHROMA_WINDOW_SECS: f32 = 0.185;
+
+/// Lowest frequency admitted to the chromagram.
+///
+/// A2. One semitone here is 6.5 Hz, just above the 5.4 Hz bin spacing, so this
+/// is the lowest pitch the transform can actually resolve. Below it, adjacent
+/// notes share bins and a sub-bass line would smear across pitch classes —
+/// worse than useless, because kick drum energy lives there too.
+pub const CHROMA_FMIN: f32 = 110.0;
+
+/// Highest frequency admitted to the chromagram.
+///
+/// A7. Above this, partials from different notes are dense enough to overlap
+/// and contribute more noise than tonal evidence.
+pub const CHROMA_FMAX: f32 = 3520.0;
 
 /// Number of mel bands in the onset filterbank.
 ///
@@ -443,8 +462,13 @@ mod tests {
         assert!((s.fps(44_100) - 172.27).abs() < 0.1);
 
         let c = Stft::for_chroma(44_100);
-        assert_eq!(c.n_fft, 4096);
-        assert_eq!(c.hop, 1024);
+        assert_eq!(c.n_fft, 8192);
+        assert_eq!(c.hop, 2048);
+        // The lowest admitted pitch must stay resolvable: one semitone at
+        // CHROMA_FMIN has to be wider than one bin.
+        let bin_hz = 44_100.0 / c.n_fft as f32;
+        let semitone_hz = CHROMA_FMIN * (2f32.powf(1.0 / 12.0) - 1.0);
+        assert!(semitone_hz > bin_hz, "{semitone_hz} vs {bin_hz}");
         // 48 kHz must land on the next size up rather than silently changing
         // the analysis duration.
         assert_eq!(Stft::for_onsets(48_000).n_fft, 4096);

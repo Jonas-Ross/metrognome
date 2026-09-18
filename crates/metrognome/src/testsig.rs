@@ -84,7 +84,7 @@ pub fn noise_burst(secs: f32, sample_rate: u32, amp: f32, noise: &mut Noise) -> 
         .collect()
 }
 
-/// Decaying pitched sine — a kick or tom.
+/// Decaying pitched sine — a tom, or the tonal part of a snare.
 pub fn drum_hit(freq: f32, secs: f32, sample_rate: u32, amp: f32, decay: f32) -> Vec<f32> {
     let n = (secs * sample_rate as f32) as usize;
     let w = TAU * freq / sample_rate as f32;
@@ -94,6 +94,35 @@ pub fn drum_hit(freq: f32, secs: f32, sample_rate: u32, amp: f32, decay: f32) ->
             amp * (-decay * t).exp() * (w * i as f32).sin()
         })
         .collect()
+}
+
+/// A kick drum: broadband click, then a body whose pitch sweeps down to `freq`.
+///
+/// The sweep is not decoration. A fixed-pitch sine at 55 Hz spells a clean
+/// harmonic series on A, which a key detector is right to notice — so a
+/// drums-only test signal built from fixed-pitch hits would appear to have a
+/// key, and the test asserting otherwise would be testing the wrong thing.
+/// Real kicks (a 909, an 808, an acoustic drum) all sweep, which is exactly why
+/// they read as percussion rather than as a bass note.
+pub fn kick_hit(freq: f32, secs: f32, sample_rate: u32, amp: f32, noise: &mut Noise) -> Vec<f32> {
+    let n = (secs * sample_rate as f32) as usize;
+    let sr = sample_rate as f32;
+    let mut out = Vec::with_capacity(n);
+    let mut phase = 0.0f32;
+    for i in 0..n {
+        let t = i as f32 / sr;
+        // Starts an octave and a half up and settles within ~25 ms.
+        let f = freq * (1.0 + 1.5 * (-40.0 * t).exp());
+        phase += TAU * f / sr;
+        let env = (-9.0 * i as f32 / n.max(1) as f32).exp();
+        out.push(amp * env * phase.sin());
+    }
+    mix_at(
+        &mut out,
+        &noise_burst(0.006, sample_rate, amp * 0.5, noise),
+        0,
+    );
+    out
 }
 
 /// A bare click track: one transient per beat at exactly `bpm`.
@@ -141,19 +170,14 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
     let sr = sample_rate as f32;
     let beat = 60.0 / bpm * sr;
 
-    // A real kick is a pitched body plus a broadband click. The click matters
-    // for more than realism: onset detection works on spectral flux, and a
-    // body-only kick puts all its energy in one or two mel bands, where a
-    // broadband hi-hat would out-flux it and invert the pattern's accent
-    // structure.
-    let kick = {
-        let mut k = drum_hit(55.0, 0.18, sample_rate, 0.95, 9.0);
-        mix_at(&mut k, &noise_burst(0.006, sample_rate, 0.5, &mut noise), 0);
-        k
-    };
+    // The click in the kick matters for more than realism: onset detection
+    // works on spectral flux, and a body-only kick puts all its energy in one
+    // or two mel bands, where a broadband hi-hat would out-flux it and invert
+    // the pattern's accent structure.
+    let kick = kick_hit(55.0, 0.18, sample_rate, 0.95, &mut noise);
     let snare = {
         let mut s = noise_burst(0.12, sample_rate, 0.55, &mut noise);
-        mix_at(&mut s, &drum_hit(190.0, 0.08, sample_rate, 0.3, 12.0), 0);
+        mix_at(&mut s, &drum_hit(190.0, 0.08, sample_rate, 0.18, 12.0), 0);
         s
     };
     // Closed hats sit far below kick and snare on a real drum bus — roughly

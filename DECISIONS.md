@@ -150,3 +150,39 @@ learned before things went wrong — including the resolved track, so a caller c
 see *which* track failed to decode. `batch` depends on this: one bad row must
 not take the run with it, and a dropped row is worse than a reported failure
 because the caller cannot tell it happened.
+
+## 13. Chroma is averaged per pitch class, not summed
+
+A semitone spans about one FFT bin at A2 and dozens at A7, so the number of bins
+landing on each pitch class is wildly uneven. Summing raw magnitudes therefore
+gives *white noise* a fixed, lopsided chroma that correlates around 0.7 with
+some key — a drums-only preview came back as a confident A minor. Averaging
+within each pitch class makes noise flat, which is what lets an untonal clip
+report no key instead of a confident wrong one.
+
+This is why the chroma window is 185 ms rather than the onset window's 46 ms,
+and why the chromagram starts at A2 (110 Hz): that is the lowest pitch where one
+semitone is wider than one bin, so below it adjacent notes are not separable
+however the bins are weighted.
+
+## 14. EDM-weighted key profiles by default, Krumhansl-Schmuckler one flag away
+
+Krumhansl-Schmuckler profiles come from probe-tone experiments on Western
+classical music. Their known failure is confusing a key with its relative major
+or minor, which bites hardest on electronic music that leans on a repeated root
+and may never state a leading tone. The default profile set is therefore the
+EDM-weighted one (heavier tonic and dominant), after Shaath's work on KeyFinder.
+
+**Caveat worth knowing:** the Krumhansl-Schmuckler coefficients here are the
+widely published ones and can be checked against any reference. The EDM
+coefficients were transcribed from secondary sources and have been verified only
+against this crate's synthetic tests, which both sets pass. If the real
+validation table shows key accuracy is worse than it should be,
+`--key-profile krumhansl` is the A/B, and it is a one-line change to make it the
+default.
+
+## 15. Key names are spelled the way the Camelot wheel spells them
+
+Flats for every black key: "Eb minor / 2A", never "D# minor". The consumer is a
+DJ-adjacent tool and every harmonic mixing chart in the world uses these
+spellings; printing the enharmonic equivalent just makes the reader translate.

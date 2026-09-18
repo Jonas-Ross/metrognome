@@ -9,22 +9,45 @@ use crate::decode::decode_bytes;
 use crate::dsp::{onset_envelope, Stft};
 use crate::error::{Error, Result};
 use crate::fetch;
+use crate::key::{chromagram, estimate_key, KeyProfile};
 use crate::ratelimit::{RateLimiter, DEFAULT_BURST, DEFAULT_PER_MINUTE};
 use crate::resolve::Resolver;
 use crate::tempo::estimate_tempo;
 use crate::types::{Analysis, AudioInfo, Features, Query, TrackMatch};
 
-/// Estimate every supported feature from raw mono PCM.
+/// Knobs for the DSP itself, as opposed to the network around it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AnalysisOptions {
+    /// Which key profile set to correlate against.
+    pub key_profile: KeyProfile,
+}
+
+/// Estimate every supported feature from raw mono PCM, with default options.
 ///
 /// Takes samples and a sample rate and nothing else. Anything that needs to
-/// know where audio came from belongs above this line, not below it.
+/// know where audio came from belongs above this line, not below it — that is
+/// what lets a live capture tap reuse this unchanged.
 pub fn analyze_pcm(samples: &[f32], sample_rate: u32) -> Features {
-    let onset_stft = Stft::for_onsets(sample_rate);
-    let env = onset_envelope(&onset_stft.magnitudes(samples, sample_rate));
-    Features {
-        tempo: estimate_tempo(&env),
-        key: None,
-    }
+    analyze_pcm_with(samples, sample_rate, &AnalysisOptions::default())
+}
+
+/// As [`analyze_pcm`], with explicit options.
+pub fn analyze_pcm_with(samples: &[f32], sample_rate: u32, options: &AnalysisOptions) -> Features {
+    // Tempo and key share nothing but the samples, and each is dominated by its
+    // own STFT, so they are worth running side by side.
+    let (tempo, key) = rayon::join(
+        || {
+            let stft = Stft::for_onsets(sample_rate);
+            let env = onset_envelope(&stft.magnitudes(samples, sample_rate));
+            estimate_tempo(&env)
+        },
+        || {
+            let stft = Stft::for_chroma(sample_rate);
+            let chroma = chromagram(&stft.magnitudes(samples, sample_rate));
+            estimate_key(&chroma, options.key_profile)
+        },
+    );
+    Features { tempo, key }
 }
 
 /// How the analyzer talks to the outside world.
@@ -34,6 +57,8 @@ pub struct AnalyzerConfig {
     pub requests_per_minute: f64,
     /// How many requests may be issued back to back from idle.
     pub burst: f64,
+    /// DSP options passed down to [`analyze_pcm_with`].
+    pub analysis: AnalysisOptions,
 }
 
 impl Default for AnalyzerConfig {
@@ -41,6 +66,7 @@ impl Default for AnalyzerConfig {
         AnalyzerConfig {
             requests_per_minute: DEFAULT_PER_MINUTE,
             burst: DEFAULT_BURST,
+            analysis: AnalysisOptions::default(),
         }
     }
 }
@@ -49,6 +75,7 @@ impl Default for AnalyzerConfig {
 pub struct Analyzer {
     client: reqwest::Client,
     resolver: Resolver,
+    analysis: AnalysisOptions,
 }
 
 impl Analyzer {
@@ -59,7 +86,11 @@ impl Analyzer {
             client.clone(),
             RateLimiter::new(config.requests_per_minute, config.burst),
         );
-        Ok(Analyzer { client, resolver })
+        Ok(Analyzer {
+            client,
+            resolver,
+            analysis: config.analysis,
+        })
     }
 
     /// Point resolution at a different origin. For tests.
@@ -104,13 +135,14 @@ impl Analyzer {
             track_id: track.track_id,
         })?;
         let bytes = fetch::fetch_bytes(&self.client, &url).await?;
+        let options = self.analysis;
 
         // Decode and DSP are CPU-bound and would otherwise block the reactor
         // for the whole of a ~200 ms analysis while other downloads wait.
         tokio::task::spawn_blocking(move || {
             let pcm = decode_bytes(bytes, Some("m4a"))?;
             let stats = pcm.stats();
-            let features = analyze_pcm(&pcm.samples, pcm.sample_rate);
+            let features = analyze_pcm_with(&pcm.samples, pcm.sample_rate, &options);
             Ok((
                 features,
                 AudioInfo {
@@ -130,6 +162,23 @@ impl Analyzer {
 mod tests {
     use super::*;
     use crate::testsig::{self, Groove};
+
+    #[test]
+    fn analyze_pcm_reports_tempo_and_key_for_a_full_arrangement() {
+        // Drums plus a sustained chord progression: each feature has to find
+        // its own evidence with the other's all over the spectrum.
+        let sr = 44_100;
+        let mut sig = testsig::groove(124.0, 24.0, sr, Groove::FourOnFloor);
+        let chords = testsig::chord_progression(5, testsig::Quality::Minor, 24.0, sr);
+        testsig::mix_at(&mut sig, &chords, 0);
+
+        let f = analyze_pcm(&sig, sr);
+        let tempo = f.tempo.expect("tempo");
+        assert!((tempo.bpm - 124.0).abs() < 1.0, "got {}", tempo.bpm);
+        let key = f.key.expect("key");
+        assert_eq!(key.key, "F minor", "conf {}", key.confidence);
+        assert_eq!(key.camelot, "4A");
+    }
 
     #[test]
     fn analyze_pcm_reports_tempo_for_a_groove() {

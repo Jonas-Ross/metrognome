@@ -21,6 +21,7 @@ pub mod decode;
 pub mod dsp;
 pub mod error;
 pub mod fetch;
+pub mod key;
 pub mod pipeline;
 pub mod ratelimit;
 pub mod resolve;
@@ -30,7 +31,8 @@ pub mod types;
 
 pub use decode::{decode_bytes, Pcm, PcmStats};
 pub use error::{Error, ErrorKind, Result};
-pub use pipeline::{analyze_pcm, Analyzer, AnalyzerConfig};
+pub use key::KeyProfile;
+pub use pipeline::{analyze_pcm, analyze_pcm_with, AnalysisOptions, Analyzer, AnalyzerConfig};
 pub use types::{
     Alternate, Analysis, AudioInfo, Features, KeyEstimate, Query, TempoEstimate, TrackMatch,
     SCHEMA_VERSION,

@@ -59,6 +59,13 @@ struct NetOpts {
     /// How many requests may be issued back to back from idle.
     #[arg(long, default_value_t = metrognome::ratelimit::DEFAULT_BURST)]
     burst: f64,
+    /// Key profile set: `edm` (default) or `krumhansl`.
+    #[arg(long, default_value = "edm", value_parser = parse_key_profile)]
+    key_profile: metrognome::KeyProfile,
+}
+
+fn parse_key_profile(s: &str) -> Result<metrognome::KeyProfile, String> {
+    metrognome::KeyProfile::parse(s).ok_or_else(|| format!("unknown key profile: {s}"))
 }
 
 impl From<&NetOpts> for metrognome::AnalyzerConfig {
@@ -66,6 +73,9 @@ impl From<&NetOpts> for metrognome::AnalyzerConfig {
         metrognome::AnalyzerConfig {
             requests_per_minute: o.requests_per_minute,
             burst: o.burst,
+            analysis: metrognome::AnalysisOptions {
+                key_profile: o.key_profile,
+            },
         }
     }
 }
