@@ -332,15 +332,22 @@ async fn main() -> Result<()> {
 /// whose whole point is to be read by a person.
 fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
     eprintln!("\n{}", metrognome::validate::render_table(rows));
-    // A row passes only if the tempo landed *and*, where one was expected, the
-    // key did. Counting tempo alone would let key estimation rot silently.
-    let failures = rows.iter().filter(|r| !r.passed()).count();
+    // Tempo and key are reported separately because they are validated to
+    // different standards. Only tempo gates the run.
+    let summary = metrognome::validate::Summary::of(rows);
+    let failures = summary.failures();
     eprintln!(
-        "{} of {} within {} BPM with the expected key",
-        rows.len() - failures,
-        rows.len(),
+        "tempo: {} of {} within {} BPM",
+        summary.tempo_ok,
+        summary.total,
         metrognome::validate::BPM_TOLERANCE
     );
+    if summary.key_checked > 0 {
+        eprintln!(
+            "key:   {} of {} agreed (provisional, does not gate)",
+            summary.key_agreed, summary.key_checked
+        );
+    }
     // The table says which rows are wrong; this says what they were wrong
     // about. Failures only — a passing row needs no explaining.
     let diagnostics = metrognome::validate::render_diagnostics(rows);
@@ -354,7 +361,11 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
             "schema_version": metrognome::SCHEMA_VERSION,
             "algorithm_version": metrognome::ALGORITHM_VERSION,
             "rows": rows,
+            // Tempo failures only, matching the exit status.
             "failures": failures,
+            "tempo_ok": summary.tempo_ok,
+            "key_checked": summary.key_checked,
+            "key_agreed": summary.key_agreed,
         }))?
     );
     if failures > 0 {

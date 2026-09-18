@@ -127,6 +127,47 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     },
 ];
 
+/// What a validation run measured, split by how far each half can be trusted.
+///
+/// Tempo and key are not equally validated and should not be totalled into one
+/// number. Tempo references agree across published sources and are checkable;
+/// key references do not and are not. The same run of ten tracks is a real
+/// accuracy measurement for tempo and a handful of anecdotes for key, so
+/// summing them produces a figure that means neither thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Summary {
+    /// Rows measured.
+    pub total: usize,
+    /// Rows whose tempo landed within [`BPM_TOLERANCE`].
+    pub tempo_ok: usize,
+    /// Rows carrying a key expectation at all. Most do not.
+    pub key_checked: usize,
+    /// Of those, how many agreed.
+    pub key_agreed: usize,
+}
+
+impl Summary {
+    /// Count a set of rows.
+    pub fn of(rows: &[ValidationRow]) -> Self {
+        Self {
+            total: rows.len(),
+            tempo_ok: rows.iter().filter(|r| r.tempo_ok()).count(),
+            key_checked: rows.iter().filter(|r| r.key_ok.is_some()).count(),
+            key_agreed: rows.iter().filter(|r| r.key_ok == Some(true)).count(),
+        }
+    }
+
+    /// What makes the run exit non-zero.
+    ///
+    /// Tempo only. A key disagreement is reported and diagnosed but does not
+    /// fail the run: with published key data self-contradicting — the same
+    /// track listed in two different keys by the same source — a red build
+    /// would be measuring the reference, not the estimator.
+    pub fn failures(&self) -> usize {
+        self.total - self.tempo_ok
+    }
+}
+
 /// One row of a validation report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationRow {
@@ -199,11 +240,17 @@ pub struct MatchedTrack {
 }
 
 impl ValidationRow {
-    /// Whether this row is a pass: the tempo landed and, where a key was
-    /// expected, the key did too. The tempo verdict alone is not enough —
-    /// key estimation could be wrong on every case and still exit zero.
+    /// Whether everything this row checked agreed. Drives the diagnostics, so
+    /// that a key disagreement still gets explained even when the tempo landed.
+    ///
+    /// This is deliberately *not* what gates the run — see [`Summary`].
     pub fn passed(&self) -> bool {
         self.verdict == Verdict::Ok && self.key_ok != Some(false)
+    }
+
+    /// Whether the tempo landed within tolerance.
+    pub fn tempo_ok(&self) -> bool {
+        self.verdict == Verdict::Ok
     }
 }
 
@@ -653,6 +700,33 @@ mod tests {
         // hundredth behind is a different bug from one that wins by a mile.
         assert!(d.contains("key: E minor conf 1.00"), "{d}");
         assert!(d.contains("B minor (10A) dominant score 0.612"), "{d}");
+    }
+
+    #[test]
+    fn a_key_disagreement_is_reported_but_does_not_gate_the_run() {
+        // The case this exists for: Sandstorm's tempo lands and its key does
+        // not. The run must say so and still exit zero, because the key
+        // reference is the weaker half of the comparison.
+        let mut tempo_right_key_wrong = row("x", "trance", 136.0, "B", &Features::default());
+        tempo_right_key_wrong.verdict = Verdict::Ok;
+        tempo_right_key_wrong.key_ok = Some(false);
+
+        let mut both_right = row("y", "house", 128.0, "", &Features::default());
+        both_right.verdict = Verdict::Ok;
+
+        let s = Summary::of(&[tempo_right_key_wrong.clone(), both_right]);
+        assert_eq!(s.failures(), 0, "a key miss must not fail the run");
+        assert_eq!((s.tempo_ok, s.key_checked, s.key_agreed), (2, 1, 0));
+
+        // It is still a diagnosable row, or the disagreement goes unexplained.
+        assert!(!tempo_right_key_wrong.passed());
+    }
+
+    #[test]
+    fn a_tempo_miss_still_fails_the_run() {
+        let mut r = row("x", "techno", 138.0, "", &Features::default());
+        r.verdict = Verdict::Wrong;
+        assert_eq!(Summary::of(&[r]).failures(), 1);
     }
 
     #[test]

@@ -121,6 +121,20 @@ Key comes out in both standard notation and Camelot (`"F minor"`, `"4A"`),
 correlated against EDM-weighted profiles by default;
 `--key-profile krumhansl` switches to the classical Krumhansl-Schmuckler set.
 
+**Tempo is validated; key is provisional.** They are not equally trustworthy and
+the output should not be read as though they were. Tempo is checked against
+published figures that agree across sources, and every case with a verified
+reference passes. Key has no comparable reference: published key data
+contradicts itself — the same track is listed in different keys by the same
+source — so there is nothing to measure against. What is verified is that key
+estimation recovers all twenty-four keys from unambiguous synthetic material on
+both profile sets, which rules out a systematic rotation but says nothing about
+real recordings.
+
+Consume key through its `confidence` and `uncertain` fields rather than as a
+fact. `metrognome validate` reflects this: a key disagreement is printed and
+diagnosed, but only tempo decides the exit status.
+
 Every estimate carries a 0-1 confidence. Previews are sometimes a beatless intro
 or a breakdown, and a low confidence score is the estimator telling you so.
 

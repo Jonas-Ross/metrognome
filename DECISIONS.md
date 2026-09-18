@@ -501,3 +501,28 @@ What this does not do is change which tempo wins. Ranking still uses
 `score`, untouched, so the accuracy column of the next run should be identical
 to the last one and only the confidence column should move. If a tempo moves,
 this change did something it was not supposed to.
+
+## 31. Tempo ships validated, key ships provisional
+
+The live validation set measures tempo well and key barely at all, and totalling
+them into one "7 of 10" hid that. Tempo references agree across published
+sources; key references do not. The screenshots that corrected entry 27's
+reference figures also showed the same source listing one recording of Inner
+City Life in G and its radio edit in A — the same music, two keys.
+
+So the two halves are reported separately and only tempo gates the run. A key
+disagreement still prints and still gets diagnosed with its runners-up; it just
+cannot fail a build, because a red build there would be measuring the reference
+rather than the estimator.
+
+What is actually established about key: it recovers all twenty-four keys from
+unambiguous synthetic material on both profile sets. That rules out a rotation
+error in the transcribed profiles or a constant offset in the chroma binning,
+which matters because the one real track with a documented key disagrees by
+exactly one step on the circle of fifths — indistinguishable, on a single case,
+from a systematic rotation. It is not one. Beyond that, nothing is established,
+and the confidence field is how a consumer is told so.
+
+This is a scope call, not a deferral: metrognome reports measurements with their
+uncertainty, and claiming a validated key would be reporting a measurement we
+have not made.
