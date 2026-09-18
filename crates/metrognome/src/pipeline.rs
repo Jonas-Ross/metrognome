@@ -196,14 +196,8 @@ impl Analyzer {
 
     async fn resolve(&self, query: &Query) -> Result<TrackMatch> {
         let key = Self::resolution_key(query);
-        if let Some(key) = &key {
-            if let Some(cache) = &self.cache {
-                if let Ok(guard) = cache.lock() {
-                    if let Ok(Some(hit)) = guard.get_resolution(key) {
-                        return Ok(hit);
-                    }
-                }
-            }
+        if let Some(hit) = key.as_deref().and_then(|k| self.cached_resolution(k)) {
+            return Ok(hit);
         }
 
         let resolved = if let Some(id) = query.track_id {
@@ -219,21 +213,29 @@ impl Analyzer {
             }
         }?;
 
-        if let (Some(key), Some(cache)) = (&key, &self.cache) {
-            if let Ok(guard) = cache.lock() {
-                // A cache write failure is not worth failing an analysis over;
-                // the cost is one repeated request next time.
-                if let Err(e) = guard.put_resolution(key, &resolved) {
-                    tracing::warn!(error = %e, "could not cache resolution");
-                }
-            }
+        if let Some(key) = &key {
+            self.store_resolution(key, &resolved);
         }
         Ok(resolved)
     }
 
+    fn cached_resolution(&self, key: &str) -> Option<TrackMatch> {
+        let guard = self.cache.as_ref()?.lock().ok()?;
+        guard.get_resolution(key).ok().flatten()
+    }
+
+    fn store_resolution(&self, key: &str, value: &TrackMatch) {
+        let Some(cache) = &self.cache else { return };
+        let Ok(guard) = cache.lock() else { return };
+        // A cache write failure is not worth failing an analysis over; the cost
+        // is one repeated request next time.
+        if let Err(e) = guard.put_resolution(key, value) {
+            tracing::warn!(error = %e, "could not cache resolution");
+        }
+    }
+
     fn cached(&self, track_id: i64, options_key: &str) -> Option<CachedAnalysis> {
-        let cache = self.cache.as_ref()?;
-        let guard = cache.lock().ok()?;
+        let guard = self.cache.as_ref()?.lock().ok()?;
         guard.get(track_id, options_key).ok().flatten()
     }
 

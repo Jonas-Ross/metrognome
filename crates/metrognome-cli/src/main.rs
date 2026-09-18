@@ -243,46 +243,11 @@ async fn main() -> Result<()> {
                 // Carry what the query actually resolved to. Without it a bad
                 // match and a bad estimate are indistinguishable in the table.
                 if let (Some(track), Some(audio)) = (&result.track, &result.audio) {
-                    row.matched = Some(metrognome::validate::MatchedTrack {
-                        artist: track.artist.clone(),
-                        title: track.title.clone(),
-                        match_score: track.match_score,
-                        uncertain: track.uncertain,
-                        preview_secs: audio.duration_secs,
-                        silent_fraction: audio.silent_fraction,
-                        tempo_alternates: result
-                            .features
-                            .tempo
-                            .as_ref()
-                            .map(|t| {
-                                t.alternates
-                                    .iter()
-                                    .map(|a| (a.value, a.relation.clone(), a.score))
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        key_alternates: result
-                            .features
-                            .key
-                            .as_ref()
-                            .map(|k| {
-                                k.alternates
-                                    .iter()
-                                    .map(|a| {
-                                        (
-                                            // The label carries the key name;
-                                            // the value is only its Camelot
-                                            // number, which reads as a bare
-                                            // integer in a report.
-                                            a.label.clone().unwrap_or_else(|| a.value.to_string()),
-                                            a.relation.clone(),
-                                            a.score,
-                                        )
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                    });
+                    row.matched = Some(metrognome::validate::MatchedTrack::of(
+                        track,
+                        audio,
+                        &result.features,
+                    ));
                 }
                 rows.push(row);
             }

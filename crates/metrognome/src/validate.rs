@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{analyze_pcm_with, AnalysisOptions};
 use crate::testsig::{self, Groove, Quality};
-use crate::types::Features;
+use crate::types::{Alternate, AudioInfo, Features, TrackMatch};
 
 /// One track with a documented tempo.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -210,16 +210,31 @@ pub struct MatchedTrack {
     /// Fraction of the preview below -60 dBFS. A high value means the clip is
     /// an intro, an outro or a breakdown rather than the body of the track.
     pub silent_fraction: f64,
-    /// Tempo alternates on offer, best first, as `(bpm, relation, score)`. The
-    /// score is comparable only within one track, and separates a near miss
-    /// from a rout.
+    /// Tempo alternates on offer, best first. The score is comparable only
+    /// within one track, and separates a near miss from a rout.
     #[serde(default)]
-    pub tempo_alternates: Vec<(f64, String, f32)>,
-    /// Key alternates on offer, best first, as `(label, relation, score)`.
-    /// Losing to the relative major, to the dominant, or to a key sharing no
-    /// notes are three different failures.
+    pub tempo_alternates: Vec<Alternate>,
+    /// Key alternates on offer, best first. Losing to the relative major, to
+    /// the dominant, or to a key sharing no notes are three different failures.
     #[serde(default)]
-    pub key_alternates: Vec<(String, String, f32)>,
+    pub key_alternates: Vec<Alternate>,
+}
+
+impl MatchedTrack {
+    /// What a live run resolved to, paired with the features it produced.
+    pub fn of(track: &TrackMatch, audio: &AudioInfo, features: &Features) -> Self {
+        let alternates = |a: Option<&Vec<Alternate>>| a.cloned().unwrap_or_default();
+        MatchedTrack {
+            artist: track.artist.clone(),
+            title: track.title.clone(),
+            match_score: track.match_score,
+            uncertain: track.uncertain,
+            preview_secs: audio.duration_secs,
+            silent_fraction: audio.silent_fraction,
+            tempo_alternates: alternates(features.tempo.as_ref().map(|t| &t.alternates)),
+            key_alternates: alternates(features.key.as_ref().map(|k| &k.alternates)),
+        }
+    }
 }
 
 impl ValidationRow {
@@ -374,49 +389,68 @@ pub fn row(
     }
 }
 
+/// Placeholder for a column with nothing in it.
+const DASH: &str = "—";
+
+/// Two decimal places, or a dash when there is no number.
+fn or_dash(v: Option<f32>) -> String {
+    v.map_or_else(|| DASH.to_string(), |v| format!("{v:.2}"))
+}
+
 /// Render rows as a GitHub-flavoured markdown table.
 pub fn render_table(rows: &[ValidationRow]) -> String {
     let mut out = String::new();
     out.push_str("| Track | Genre | Expected BPM | Estimated BPM | Verdict | Tempo conf. | Expected key | Estimated key | Camelot | Key conf. |\n");
     out.push_str("|---|---|---:|---:|---|---:|---|---|---|---:|\n");
     for r in rows {
-        let dash = "—".to_string();
+        let verdict = match r.verdict {
+            Verdict::Ok => "ok",
+            Verdict::OctaveError => "**OCTAVE**",
+            Verdict::MetricError => "**METRIC**",
+            Verdict::Wrong => "**wrong**",
+            Verdict::Missing => "**none**",
+        };
+        let estimated_key = match (&r.estimated_key, r.key_ok) {
+            // Bolded only when it was checked and missed, so a wrong key is as
+            // visible in the table as a wrong tempo.
+            (Some(k), Some(false)) => format!("**{k}**"),
+            (Some(k), _) => k.clone(),
+            (None, Some(false)) => "**none**".to_string(),
+            (None, _) => DASH.to_string(),
+        };
         out.push_str(&format!(
             "| {} | {} | {:.0} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.label,
             r.genre,
             r.expected_bpm,
-            r.estimated_bpm
-                .map(|v| format!("{v:.2}"))
-                .unwrap_or_else(|| dash.clone()),
-            match r.verdict {
-                Verdict::Ok => "ok",
-                Verdict::OctaveError => "**OCTAVE**",
-                Verdict::MetricError => "**METRIC**",
-                Verdict::Wrong => "**wrong**",
-                Verdict::Missing => "**none**",
-            },
-            r.tempo_confidence
-                .map(|v| format!("{v:.2}"))
-                .unwrap_or_else(|| dash.clone()),
+            or_dash(r.estimated_bpm),
+            verdict,
+            or_dash(r.tempo_confidence),
             if r.expected_key.is_empty() {
-                dash.clone()
+                DASH
             } else {
-                r.expected_key.clone()
+                &r.expected_key
             },
-            match (&r.estimated_key, r.key_ok) {
-                // Bolded only when it was checked and missed, so a wrong key is
-                // as visible in the table as a wrong tempo.
-                (Some(k), Some(false)) => format!("**{k}**"),
-                (Some(k), _) => k.clone(),
-                (None, Some(false)) => "**none**".to_string(),
-                (None, _) => dash.clone(),
-            },
-            r.camelot.clone().unwrap_or_else(|| dash.clone()),
-            r.key_confidence.map(|v| format!("{v:.2}")).unwrap_or(dash),
+            estimated_key,
+            r.camelot.as_deref().unwrap_or(DASH),
+            or_dash(r.key_confidence),
         ));
     }
     out
+}
+
+/// One line of alternates, best first.
+///
+/// A key alternate identifies itself by its label; a tempo alternate has none,
+/// because the number is the whole answer.
+fn describe_alternates(alts: &[Alternate]) -> String {
+    alts.iter()
+        .map(|a| {
+            let what = a.label.clone().unwrap_or_else(|| format!("{:.2}", a.value));
+            format!("{what} {} score {:.3}", a.relation, a.score)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Render the per-failure detail that the table has no room for.
@@ -445,18 +479,16 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             m.silent_fraction * 100.0
         ));
         if !m.tempo_alternates.is_empty() {
-            let alts: Vec<String> = m
-                .tempo_alternates
-                .iter()
-                .map(|(bpm, rel, score)| format!("{bpm:.2} {rel} score {score:.3}"))
-                .collect();
-            out.push_str(&format!("    alternates: {}\n", alts.join(", ")));
+            out.push_str(&format!(
+                "    alternates: {}\n",
+                describe_alternates(&m.tempo_alternates)
+            ));
             // The expected tempo being on the shortlist but not chosen is a
             // scoring problem; it being absent is an envelope problem.
             let near = m
                 .tempo_alternates
                 .iter()
-                .any(|(bpm, _, _)| (*bpm as f32 - r.expected_bpm).abs() <= BPM_TOLERANCE);
+                .any(|a| (a.value as f32 - r.expected_bpm).abs() <= BPM_TOLERANCE);
             out.push_str(&format!(
                 "    expected {:.0} was {} the alternates\n",
                 r.expected_bpm,
@@ -464,11 +496,6 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             ));
         }
         if !m.key_alternates.is_empty() {
-            let alts: Vec<String> = m
-                .key_alternates
-                .iter()
-                .map(|(label, rel, score)| format!("{label} {rel} score {score:.3}"))
-                .collect();
             // The relation matters more than the score here. A run of
             // `relative_minor` and `dominant` runners-up separated by
             // hundredths is the chromagram working and the tiebreak failing;
@@ -477,75 +504,71 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
                 "    key: {} conf {:.2}, runners-up: {}\n",
                 r.estimated_key.as_deref().unwrap_or("none"),
                 r.key_confidence.unwrap_or(0.0),
-                alts.join(", ")
+                describe_alternates(&m.key_alternates)
             ));
         }
     }
     out
 }
 
+/// One synthesized case: a signal with a known tempo and key.
+struct SelftestCase {
+    label: String,
+    genre: &'static str,
+    bpm: f32,
+    key: &'static str,
+    signal: Vec<f32>,
+}
+
 /// Synthesized cases covering the same tempo range as [`REFERENCE_TRACKS`],
-/// each carrying the octave or metric trap its idiom actually has.
-fn selftest_cases(sample_rate: u32) -> Vec<(String, String, f32, &'static str, Vec<f32>)> {
+/// each carrying the octave or metric trap its idiom actually has: the groove
+/// column is what decides which trap, and [`Groove`] documents them.
+fn selftest_cases(sample_rate: u32) -> Vec<SelftestCase> {
     let secs = 30.0;
-    let mut cases: Vec<(String, String, f32, &'static str, Vec<f32>)> = Vec::new();
+    #[rustfmt::skip]
+    let grooved: &[(f32, u8, Quality, &str, Groove, &str)] = &[
+        (120.0,  9, Quality::Minor, "A minor",  Groove::FourOnFloor, "house"),
+        (124.0,  5, Quality::Minor, "F minor",  Groove::FourOnFloor, "house"),
+        (128.0,  0, Quality::Major, "C major",  Groove::FourOnFloor, "house"),
+        (136.0, 11, Quality::Minor, "B minor",  Groove::FourOnFloor, "techno"),
+        (138.0,  3, Quality::Minor, "Eb minor", Groove::FourOnFloor, "techno"),
+        (170.0,  7, Quality::Minor, "G minor",  Groove::Breakbeat,   "drum & bass"),
+        (174.0,  2, Quality::Minor, "D minor",  Groove::Breakbeat,   "drum & bass"),
+        (176.0, 10, Quality::Major, "Bb major", Groove::Breakbeat,   "drum & bass"),
+    ];
 
-    for (bpm, key_pc, quality, key_name) in [
-        (120.0f32, 9u8, Quality::Minor, "A minor"),
-        (124.0, 5, Quality::Minor, "F minor"),
-        (128.0, 0, Quality::Major, "C major"),
-        (136.0, 11, Quality::Minor, "B minor"),
-        (138.0, 3, Quality::Minor, "Eb minor"),
-    ] {
-        // Four-on-the-floor: the trap is offbeat hats reading as double time.
-        let mut sig = testsig::groove(bpm, secs, sample_rate, Groove::FourOnFloor);
-        testsig::mix_at(
-            &mut sig,
-            &testsig::chord_progression(key_pc, quality, secs, sample_rate),
-            0,
-        );
-        let genre = if bpm < 130.0 { "house" } else { "techno" };
-        cases.push((
-            format!("synthetic four-on-the-floor {bpm:.0}"),
-            genre.to_string(),
-            bpm,
-            key_name,
-            sig,
-        ));
-    }
-
-    for (bpm, key_pc, quality, key_name) in [
-        (170.0f32, 7u8, Quality::Minor, "G minor"),
-        (174.0, 2, Quality::Minor, "D minor"),
-        (176.0, 10, Quality::Major, "Bb major"),
-    ] {
-        // Breakbeat: the trap is the snare period reading as half time, which
-        // is the 87-vs-174 drum & bass failure.
-        let mut sig = testsig::groove(bpm, secs, sample_rate, Groove::Breakbeat);
-        testsig::mix_at(
-            &mut sig,
-            &testsig::chord_progression(key_pc, quality, secs, sample_rate),
-            0,
-        );
-        cases.push((
-            format!("synthetic breakbeat {bpm:.0}"),
-            "drum & bass".to_string(),
-            bpm,
-            key_name,
-            sig,
-        ));
-    }
+    let mut cases: Vec<SelftestCase> = grooved
+        .iter()
+        .map(|&(bpm, key_pc, quality, key, groove, genre)| {
+            let mut signal = testsig::groove(bpm, secs, sample_rate, groove);
+            testsig::mix_at(
+                &mut signal,
+                &testsig::chord_progression(key_pc, quality, secs, sample_rate),
+                0,
+            );
+            let shape = match groove {
+                Groove::FourOnFloor => "four-on-the-floor",
+                Groove::Breakbeat => "breakbeat",
+                Groove::OffbeatTrance => "offbeat trance",
+            };
+            SelftestCase {
+                label: format!("synthetic {shape} {bpm:.0}"),
+                genre,
+                bpm,
+                key,
+                signal,
+            }
+        })
+        .collect();
 
     // A bare click track at each end, as an unambiguous control.
-    for bpm in [122.0f32, 172.0] {
-        cases.push((
-            format!("click track {bpm:.0}"),
-            "control".to_string(),
-            bpm,
-            "",
-            testsig::click_track(bpm, secs, sample_rate),
-        ));
-    }
+    cases.extend([122.0f32, 172.0].map(|bpm| SelftestCase {
+        label: format!("click track {bpm:.0}"),
+        genre: "control",
+        bpm,
+        key: "",
+        signal: testsig::click_track(bpm, secs, sample_rate),
+    }));
     cases
 }
 
@@ -556,9 +579,9 @@ fn selftest_cases(sample_rate: u32) -> Vec<(String, String, f32, &'static str, V
 pub fn selftest(sample_rate: u32, options: &AnalysisOptions) -> Vec<ValidationRow> {
     selftest_cases(sample_rate)
         .into_iter()
-        .map(|(label, genre, bpm, key, sig)| {
-            let features = analyze_pcm_with(&sig, sample_rate, options);
-            row(label, genre, bpm, key, &features)
+        .map(|c| {
+            let features = analyze_pcm_with(&c.signal, sample_rate, options);
+            row(c.label, c.genre, c.bpm, c.key, &features)
         })
         .collect()
 }
@@ -566,6 +589,15 @@ pub fn selftest(sample_rate: u32, options: &AnalysisOptions) -> Vec<ValidationRo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn alt(value: f64, label: Option<&str>, relation: &str, score: f32) -> Alternate {
+        Alternate {
+            value,
+            label: label.map(str::to_string),
+            relation: relation.to_string(),
+            score,
+        }
+    }
 
     #[test]
     fn verdicts_name_the_failure_mode() {
@@ -624,8 +656,11 @@ mod tests {
             uncertain: true,
             preview_secs: 30.0,
             silent_fraction: 0.4,
-            tempo_alternates: vec![(155.0, "double".into(), 0.9), (77.5, "half".into(), 0.4)],
-            key_alternates: vec![("G major (9B)".into(), "relative_major".into(), 0.71)],
+            tempo_alternates: vec![
+                alt(155.0, None, "double", 0.9),
+                alt(77.5, None, "half", 0.4),
+            ],
+            key_alternates: vec![alt(9.0, Some("G major (9B)"), "relative_major", 0.71)],
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("Inner City Life (Radio Edit)"), "{d}");
@@ -643,7 +678,7 @@ mod tests {
             uncertain: false,
             preview_secs: 30.0,
             silent_fraction: 0.01,
-            tempo_alternates: vec![(174.0, "double".into(), 0.9)],
+            tempo_alternates: vec![alt(174.0, None, "double", 0.9)],
             key_alternates: Vec::new(),
         });
         let d = render_diagnostics(&[r]);
@@ -668,8 +703,8 @@ mod tests {
             silent_fraction: 0.03,
             tempo_alternates: Vec::new(),
             key_alternates: vec![
-                ("B minor (10A)".into(), "dominant".into(), 0.612),
-                ("G major (9B)".into(), "relative_major".into(), 0.604),
+                alt(10.0, Some("B minor (10A)"), "dominant", 0.612),
+                alt(9.0, Some("G major (9B)"), "relative_major", 0.604),
             ],
         });
         let d = render_diagnostics(&[r]);

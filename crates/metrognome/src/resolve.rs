@@ -377,23 +377,18 @@ impl Resolver {
     pub async fn lookup(&self, track_id: i64) -> Result<TrackMatch> {
         let url = format!("{}/lookup?id={track_id}&entity=song", self.base_url);
         let results = parse_response(&self.get(&url).await?)?;
-        results
-            .iter()
-            .find(|c| c.track_id == Some(track_id))
-            // An ID is an exact identification, so the score is 1.0 by
-            // definition — there is no fuzziness to report.
-            .map(|c| to_match(c, 1.0))
-            // Not NoPreview: that says the track exists and can never be
-            // analyzed, which a consumer may record and never retry. A missing
-            // row means the ID is wrong or regional.
-            .ok_or(Error::NotFound { track_id })
-            .and_then(|m| {
-                if m.preview_url.is_some() {
-                    Ok(m)
-                } else {
-                    Err(Error::NoPreview { track_id })
-                }
-            })
+        // Not NoPreview: that says the track exists and can never be analyzed,
+        // which a consumer may record and never retry. A missing row means the
+        // ID is wrong or regional.
+        let Some(found) = results.iter().find(|c| c.track_id == Some(track_id)) else {
+            return Err(Error::NotFound { track_id });
+        };
+        // An ID is an exact identification, so the score is 1.0 by definition.
+        let matched = to_match(found, 1.0);
+        if matched.preview_url.is_none() {
+            return Err(Error::NoPreview { track_id });
+        }
+        Ok(matched)
     }
 
     /// Resolve by artist and title.
