@@ -554,3 +554,25 @@ reports its right one at 0.65. A feature whose confidence is highest where it is
 wrong has not earned being called validated. What has changed is that key now
 has evidence for it rather than only against, and the reference set carries
 enough documented keys to notice a regression.
+
+## 33. The tempo/key trust split is a payload field, not documentation
+
+Entries 31 and 32 settled that tempo is validated and key is not. Until now that
+split lived only in prose, which meant selecta would have had to hardcode "trust
+tempo, distrust key" — a rule that goes stale silently the day key is validated,
+and goes stale wrongly the day a third feature arrives.
+
+So every estimate carries `maturity: "validated" | "provisional"` alongside its
+confidence. The two answer different questions and a consumer needs both:
+confidence is how sure the estimator is about this clip, maturity is whether the
+estimator has ever been measured against real recordings. A provisional feature
+can be highly confident and wrong — Sandstorm reports its wrong key at 1.00 —
+which is exactly why confidence alone cannot carry the warning.
+
+The field is always present rather than optional, so `SCHEMA_VERSION` goes to 2:
+a consumer can now count on reading it, and that guarantee is what the number
+tracks. `ALGORITHM_VERSION` does not move, because no measurement changed.
+
+Deliberately not given a serde default. A cache row written before this field
+existed fails to parse and is treated as a miss, which costs one re-analysis; a
+default would have let a stale row assert a maturity nothing ever measured.

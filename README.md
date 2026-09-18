@@ -33,12 +33,16 @@ metrognome validate   # accuracy check against known tracks, needs network
 
 Every object carries `schema_version`, and every feature carries its own
 `source` and `confidence` plus an `uncertain` flag, so a consumer can tell a
-measurement from a guess. Features live under `features`, which grows by adding
-optional fields rather than by moving existing ones.
+measurement from a guess. It also carries `maturity`, either `"validated"` or
+`"provisional"`: confidence is how sure the estimator is about this clip,
+maturity is whether the estimator itself has been checked against real
+recordings. Read both — a provisional feature can be confidently wrong. Features
+live under `features`, which grows by adding optional fields rather than by
+moving existing ones.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "algorithm_version": 1,
   "status": "ok",
   "query": { "artist": "Daft Punk", "title": "Around the World" },
@@ -59,6 +63,7 @@ optional fields rather than by moving existing ones.
       "camelot": "8A",
       "confidence": 0.79,
       "uncertain": false,
+      "maturity": "provisional",
       "source": "metrognome/chroma-correlation-edm@1",
       "alternates": [
         { "value": 8.0, "label": "C major (8B)", "relation": "relative_major", "score": 0.681 }
@@ -68,6 +73,7 @@ optional fields rather than by moving existing ones.
       "bpm": 121.0,
       "confidence": 0.86,
       "uncertain": false,
+      "maturity": "validated",
       "source": "metrognome/onset-autocorrelation-comb@1",
       "beat_offset_secs": 0.496,
       "canonical_window_bpm": [90.0, 180.0],
@@ -131,6 +137,9 @@ estimation recovers all twenty-four keys from unambiguous synthetic material on
 both profile sets, which rules out a systematic rotation but says nothing about
 real recordings.
 
+That split is in the output, not just here: tempo carries
+`"maturity": "validated"` and key carries `"maturity": "provisional"`, so a
+consumer branches on the field rather than hardcoding which feature to trust.
 Consume key through its `confidence` and `uncertain` fields rather than as a
 fact. `metrognome validate` reflects this: a key disagreement is printed and
 diagnosed, but only tempo decides the exit status.

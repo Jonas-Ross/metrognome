@@ -197,6 +197,7 @@ mod tests {
                     bpm: 174.0,
                     confidence: 0.9,
                     uncertain: false,
+                    maturity: crate::types::Maturity::Validated,
                     source: "test".into(),
                     beat_offset_secs: 0.1,
                     canonical_window_bpm: [90.0, 180.0],

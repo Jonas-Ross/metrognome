@@ -2,15 +2,18 @@
 //!
 //! Every emitted object carries [`SCHEMA_VERSION`] so a consumer can refuse
 //! what it does not understand, and every feature carries its own `source`,
-//! `confidence` and `uncertain` rather than presenting a guess as a fact. New
-//! features arrive as new optional fields; existing ones keep their meaning.
+//! `confidence`, `uncertain` and `maturity` rather than presenting a guess as
+//! a fact. New features arrive as new optional fields; existing ones keep
+//! their meaning.
 
 use serde::{Deserialize, Serialize};
 
 /// Version of the JSON objects this binary emits.
 ///
-/// Bumped only for breaking changes — adding an optional field is not one.
-pub const SCHEMA_VERSION: u32 = 1;
+/// Bumped when the guarantees change: a field a consumer may now count on
+/// being present, or one that moved or changed meaning. A field that may be
+/// absent is not a bump, because nothing could have depended on it.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Confidence at or below which a feature flags itself uncertain.
 ///
@@ -31,6 +34,22 @@ pub fn normalize_confidence(c: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// How far a feature's accuracy has been checked against real recordings.
+///
+/// Distinct from confidence, which is about one clip: this is about the
+/// estimator. Tempo has published references that agree; key does not, so it
+/// ships measured-but-unverified. A consumer reads this rather than hardcoding
+/// which feature it trusts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Maturity {
+    /// Checked against published references and passing.
+    Validated,
+    /// Emitted but unmeasured. Read it through `confidence` and `uncertain`,
+    /// and do not write it anywhere a validated figure is implied.
+    Provisional,
 }
 
 /// One alternate reading of a feature, with how it relates to the chosen one.
@@ -58,6 +77,8 @@ pub struct TempoEstimate {
     pub confidence: f32,
     /// True when the estimate should be treated as a hint.
     pub uncertain: bool,
+    /// Whether tempo estimation itself has been validated. See [`Maturity`].
+    pub maturity: Maturity,
     /// Which algorithm produced this, versioned.
     pub source: String,
     /// Offset of the first beat from the start of the analyzed audio.
@@ -84,6 +105,8 @@ pub struct KeyEstimate {
     pub confidence: f32,
     /// True when the estimate should be treated as a hint.
     pub uncertain: bool,
+    /// Whether key estimation itself has been validated. See [`Maturity`].
+    pub maturity: Maturity,
     /// Which algorithm and profile set produced this, versioned.
     pub source: String,
     /// Other plausible keys, best first.
@@ -279,6 +302,42 @@ mod tests {
         let q: Query = serde_json::from_str(r#"{"track_id":1,"client_ref":"x"}"#).unwrap();
         assert_eq!(q.track_id, Some(1));
         assert_eq!(q.client_ref.as_deref(), Some("x"));
+    }
+
+    fn tempo_json() -> String {
+        serde_json::to_string(&TempoEstimate {
+            bpm: 128.0,
+            confidence: 0.9,
+            uncertain: false,
+            maturity: Maturity::Validated,
+            source: "test".into(),
+            beat_offset_secs: 0.0,
+            canonical_window_bpm: [90.0, 180.0],
+            alternates: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn maturity_is_a_lowercase_string_a_consumer_can_switch_on() {
+        assert!(tempo_json().contains(r#""maturity":"validated""#));
+        assert_eq!(
+            serde_json::from_str::<Maturity>(r#""provisional""#).unwrap(),
+            Maturity::Provisional
+        );
+    }
+
+    #[test]
+    fn an_estimate_without_a_maturity_is_rejected_rather_than_assumed() {
+        // No serde default: a payload from before the field existed must fail
+        // to parse, so the cache treats it as a miss. Defaulting would let a
+        // stale row claim a maturity nothing measured.
+        let without: serde_json::Value = {
+            let mut v: serde_json::Value = serde_json::from_str(&tempo_json()).unwrap();
+            v.as_object_mut().unwrap().remove("maturity");
+            v
+        };
+        assert!(serde_json::from_value::<TempoEstimate>(without).is_err());
     }
 
     #[test]

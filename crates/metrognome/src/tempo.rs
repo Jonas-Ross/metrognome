@@ -3,10 +3,14 @@
 //! be expressed, and a phase-aligned comb filter scores and refines them.
 
 use crate::dsp::{autocorrelation, interp_at, smooth, OnsetEnvelope};
-use crate::types::{Alternate, TempoEstimate, UNCERTAIN_AT_OR_BELOW};
+use crate::types::{Alternate, Maturity, TempoEstimate, UNCERTAIN_AT_OR_BELOW};
 
 /// Identifier recorded on every tempo estimate.
 pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@1";
+
+/// Tempo is checked against published references that agree across sources and
+/// passes every verified case. DECISIONS.md entries 31 and 32.
+pub const TEMPO_MATURITY: Maturity = Maturity::Validated;
 
 /// Low edge (inclusive) of the canonical one-octave output window.
 ///
@@ -478,6 +482,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         bpm,
         confidence,
         uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
+        maturity: TEMPO_MATURITY,
         source: TEMPO_SOURCE.into(),
         beat_offset_secs: round3(beat_offset),
         canonical_window_bpm: [CANONICAL_LOW_BPM, CANONICAL_HIGH_BPM],
@@ -569,6 +574,12 @@ mod tests {
         let stft = Stft::for_onsets(SR);
         let env = onset_envelope(&stft.magnitudes(signal, SR));
         estimate_tempo(&env).expect("tempo estimate")
+    }
+
+    #[test]
+    fn a_tempo_estimate_declares_itself_validated() {
+        let sig = testsig::click_track(128.0, 30.0, SR);
+        assert_eq!(tempo_of(&sig).maturity, Maturity::Validated);
     }
 
     #[test]

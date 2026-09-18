@@ -26,8 +26,8 @@ pub use error::{Error, ErrorKind, Result};
 pub use key::KeyProfile;
 pub use pipeline::{analyze_pcm, analyze_pcm_with, AnalysisOptions, Analyzer, AnalyzerConfig};
 pub use types::{
-    Alternate, Analysis, AudioInfo, Features, KeyEstimate, Query, TempoEstimate, TrackMatch,
-    SCHEMA_VERSION,
+    Alternate, Analysis, AudioInfo, Features, KeyEstimate, Maturity, Query, TempoEstimate,
+    TrackMatch, SCHEMA_VERSION,
 };
 
 /// Bumped whenever a DSP change makes previously cached results incomparable.

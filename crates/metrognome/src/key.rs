@@ -5,7 +5,12 @@
 //! DJ-adjacent tool and Camelot is what harmonic mixing actually uses.
 
 use crate::dsp::{Spectrogram, CHROMA_FMAX, CHROMA_FMIN};
-use crate::types::{Alternate, KeyEstimate, UNCERTAIN_AT_OR_BELOW};
+use crate::types::{Alternate, KeyEstimate, Maturity, UNCERTAIN_AT_OR_BELOW};
+
+/// Published key data contradicts itself, so there is no reference to measure
+/// key against. Synthetic material rules out a rotation error and nothing more.
+/// DECISIONS.md entries 31 and 32.
+pub const KEY_MATURITY: Maturity = Maturity::Provisional;
 
 /// Pitch-class names, spelled the way the Camelot wheel spells them.
 ///
@@ -300,6 +305,7 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
         camelot: camelot(tonic, is_minor),
         confidence,
         uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
+        maturity: KEY_MATURITY,
         source: profile.source().to_string(),
         alternates,
     })
@@ -317,6 +323,13 @@ mod tests {
         let stft = Stft::for_chroma(SR);
         let chroma = chromagram(&stft.magnitudes(signal, SR));
         estimate_key(&chroma, profile)
+    }
+
+    #[test]
+    fn a_key_estimate_declares_itself_provisional() {
+        let sig = testsig::chord_progression(9, Quality::Minor, 20.0, SR);
+        let k = key_of(&sig, KeyProfile::default()).expect("key estimate");
+        assert_eq!(k.maturity, Maturity::Provisional);
     }
 
     #[test]

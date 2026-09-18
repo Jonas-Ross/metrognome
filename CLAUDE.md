@@ -56,7 +56,10 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 - **Small, minimal-dependency code wins.** Adding a dependency needs a sentence
   in the commit message saying why.
 - **Bump `ALGORITHM_VERSION`** whenever a DSP change makes old cached results
-  incomparable. The cache treats a version mismatch as a miss.
+  incomparable. The cache treats a version mismatch as a miss. `SCHEMA_VERSION`
+  is separate and tracks the JSON contract: bump it when a consumer gains a
+  field it can count on, or when one moves or changes meaning. A field that may
+  be absent is not a bump.
 
 ## Commands
 
