@@ -162,6 +162,8 @@ async fn a_lookup_that_returns_nothing_useful_is_a_reportable_failure() {
 /// Serves an endless chunked body with no `Content-Length`, which is how a
 /// hostile or misconfigured origin defeats a size check that only runs after
 /// the body has been buffered.
+/// Streams an endless chunked body from any path, so both the preview and the
+/// search path can be pointed at it.
 async fn serve_endless_chunks() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -208,6 +210,31 @@ async fn a_body_with_no_declared_length_still_hits_the_size_limit() {
     .await
     .expect("fetch_bytes must give up on its own, not run until the test times out")
     .expect_err("an unbounded body must be refused");
+
+    assert!(
+        err.to_string().contains("too large"),
+        "expected a size refusal, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_response_is_bounded_too() {
+    // `--api-base-url` and a redirect both point resolution at servers Apple
+    // does not run, and the body is buffered whole before it is parsed.
+    let addr = serve_endless_chunks().await;
+    let resolver = metrognome::resolve::Resolver::new(
+        metrognome::fetch::client().expect("client"),
+        metrognome::ratelimit::RateLimiter::new(600.0, 10.0),
+    )
+    .with_base_url(format!("http://{addr}"));
+
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        resolver.search("Any", "Thing"),
+    )
+    .await
+    .expect("the search read must give up on its own")
+    .expect_err("an unbounded search body must be refused");
 
     assert!(
         err.to_string().contains("too large"),

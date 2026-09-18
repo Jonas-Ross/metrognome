@@ -11,6 +11,13 @@ use crate::error::{Error, Result};
 use crate::ratelimit::RateLimiter;
 use crate::types::TrackMatch;
 
+/// Refuse a search response larger than this.
+///
+/// A `limit=25` response is tens of KB. The ceiling exists because the body is
+/// buffered whole, and `--api-base-url` and a redirect both point this at
+/// servers Apple does not run.
+const MAX_SEARCH_BYTES: usize = 1024 * 1024;
+
 /// Bumped whenever a change to matching could make a query resolve to a
 /// different track.
 ///
@@ -362,9 +369,8 @@ impl Resolver {
         if !status.is_success() {
             return Err(Error::Http(format!("GET {url}: status {status}")));
         }
-        resp.text()
-            .await
-            .map_err(|e| Error::Http(format!("read body {url}: {e}")))
+        let body = crate::fetch::read_bounded(resp, MAX_SEARCH_BYTES, "search response").await?;
+        String::from_utf8(body).map_err(|e| Error::Http(format!("read body {url}: {e}")))
     }
 
     /// Resolve by store track ID.
