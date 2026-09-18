@@ -503,6 +503,13 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
             break;
         }
         let bpm = round2(c.bpm);
+        // Several seeds routinely converge on the winner itself, and the
+        // refinement pass lands them a hundredth apart. Reporting one of those
+        // as a runner-up spends an alternate slot saying nothing and reads, in
+        // a diagnostic, as a rival reading at the tempo that already won.
+        if (bpm - round2(best.bpm)).abs() < 0.5 {
+            continue;
+        }
         if alternates
             .iter()
             .any(|a| (a.value - f64::from(bpm)).abs() < 0.5)
@@ -846,6 +853,21 @@ mod tests {
             uncontested > contested,
             "uncontested {uncontested} vs narrowly contested {contested}"
         );
+    }
+
+    #[test]
+    fn the_winner_is_not_offered_as_its_own_alternate() {
+        let est = tempo_of(&testsig::click_track(128.0, 30.0, SR));
+        for a in &est.alternates {
+            if a.relation == "runner_up" {
+                assert!(
+                    (a.value - f64::from(est.bpm)).abs() >= 0.5,
+                    "runner-up {} duplicates the chosen {}",
+                    a.value,
+                    est.bpm
+                );
+            }
+        }
     }
 
     #[test]
