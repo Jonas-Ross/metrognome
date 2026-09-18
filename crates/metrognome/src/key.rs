@@ -399,6 +399,29 @@ mod tests {
     }
 
     #[test]
+    fn every_key_is_recovered_on_both_profile_sets() {
+        // The spot checks above cover eight of the twenty-four keys. A profile
+        // transcribed with a rotation error, or a chroma binning that is off by
+        // a constant, would pass those and fail elsewhere on the circle — and
+        // the live validation set has exactly one track with a documented key,
+        // so a systematic rotation is not something real music will reveal.
+        let mut wrong = Vec::new();
+        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+            for pc in 0..12u8 {
+                for (quality, mode) in [(Quality::Major, "major"), (Quality::Minor, "minor")] {
+                    let sig = testsig::chord_progression(pc, quality, 8.0, SR);
+                    let est = key_of(&sig, profile).expect("key");
+                    let want = format!("{} {mode}", PITCH_NAMES[usize::from(pc)]);
+                    if est.key != want {
+                        wrong.push(format!("{profile:?} {want} -> {}", est.key));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} of 48: {wrong:#?}", wrong.len());
+    }
+
+    #[test]
     fn camelot_on_the_estimate_agrees_with_the_named_key() {
         let sig = testsig::chord_progression(5, Quality::Minor, 12.0, SR);
         let est = key_of(&sig, KeyProfile::Edm).unwrap();
