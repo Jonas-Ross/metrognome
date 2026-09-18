@@ -146,3 +146,59 @@ async fn a_lookup_that_returns_nothing_useful_is_a_reportable_failure() {
     // The query survives the failure so the caller can tell which row broke.
     assert_eq!(out.query.client_ref.as_deref(), Some("keep-me"));
 }
+
+/// Serves an endless chunked body with no `Content-Length`, which is how a
+/// hostile or misconfigured origin defeats a size check that only runs after
+/// the body has been buffered.
+async fn serve_endless_chunks() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                if sock.read(&mut buf).await.is_err() {
+                    return;
+                }
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: audio/mp4\r\n\
+                            Transfer-Encoding: chunked\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                // 64 KiB per chunk, forever — until the client gives up, which
+                // is the behaviour under test.
+                let chunk = vec![b'A'; 64 * 1024];
+                let header = format!("{:x}\r\n", chunk.len());
+                loop {
+                    if sock.write_all(header.as_bytes()).await.is_err()
+                        || sock.write_all(&chunk).await.is_err()
+                        || sock.write_all(b"\r\n").await.is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn a_body_with_no_declared_length_still_hits_the_size_limit() {
+    let addr = serve_endless_chunks().await;
+    let client = metrognome::fetch::client().expect("client");
+    let url = format!("http://{addr}/endless.m4a");
+
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        metrognome::fetch::fetch_bytes(&client, &url),
+    )
+    .await
+    .expect("fetch_bytes must give up on its own, not run until the test times out")
+    .expect_err("an unbounded body must be refused");
+
+    assert!(
+        err.to_string().contains("too large"),
+        "expected a size refusal, got: {err}"
+    );
+}

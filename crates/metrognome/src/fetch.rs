@@ -27,7 +27,7 @@ pub fn client() -> Result<reqwest::Client> {
 
 /// Download a preview clip into memory.
 pub async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
-    let resp = client
+    let mut resp = client
         .get(url)
         .send()
         .await
@@ -38,6 +38,7 @@ pub async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>>
         return Err(Error::Http(format!("GET {url}: status {status}")));
     }
 
+    // A declared length lets us refuse before spending any bandwidth.
     if let Some(len) = resp.content_length() {
         if len as usize > MAX_PREVIEW_BYTES {
             return Err(Error::Http(format!(
@@ -46,16 +47,22 @@ pub async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>>
         }
     }
 
-    let bytes = resp
-        .bytes()
+    // Read chunk by chunk rather than with `bytes()`, which buffers the whole
+    // body first. A chunked response declares no length, so without this the
+    // limit would only be checked after an arbitrarily large body was already
+    // in memory — and `probe --url` takes a URL straight from the caller.
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| Error::Http(format!("read body {url}: {e}")))?;
-
-    if bytes.len() > MAX_PREVIEW_BYTES {
-        return Err(Error::Http(format!(
-            "preview too large: {} bytes (limit {MAX_PREVIEW_BYTES})",
-            bytes.len()
-        )));
+        .map_err(|e| Error::Http(format!("read body {url}: {e}")))?
+    {
+        if out.len() + chunk.len() > MAX_PREVIEW_BYTES {
+            return Err(Error::Http(format!(
+                "preview too large: over {MAX_PREVIEW_BYTES} bytes"
+            )));
+        }
+        out.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(out)
 }
