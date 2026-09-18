@@ -293,3 +293,64 @@ are the same key, and published references pick either spelling.
 Most of `REFERENCE_TRACKS` carries no expected key, and that stays true —
 inventing expectations to make the column look full would make the table more
 authoritative than it is. No expectation means no opinion, not a pass.
+
+## 24. A metrical tie-break, added because the live table asked for it
+
+The first run against real recordings came back 5/10, and the per-row
+diagnostics split the failures cleanly. Every query resolved to the right
+recording (scores 0.96-1.00) and every preview was 0-3% silent, so neither bad
+matching nor beatless clips explain anything.
+
+Two rows were genuine scoring failures, and both had the true tempo already on
+the shortlist: Sandstorm read 90.71 against a true 136.07 — exactly 2/3 — and
+Brown Paper Bag read 97.22 against a true 170.03. Both reported a confidence of
+0.00, and confidence *is* the margin between leader and rival, so in both the
+two grids scored level.
+
+`comb_score` never charges a grid for the beats it declines to explain. A
+sparse grid is a subset of a dense one's structure, so sampling every third
+beat of a real groove posts a high mean and a low spread precisely by skipping
+the beats that would have cost it. Level between two metrically-related grids
+therefore is not level, and the faster reading is the better answer.
+`break_metrical_tie` prefers a faster metrically-related finalist within 4% of
+the leader.
+
+The margin is deliberately tight so the rule only fires where the estimator is
+already reporting that it cannot tell the two apart. It cannot overturn a
+confident correct reading, which is the property that makes a prior tuned on
+two observations acceptable rather than reckless.
+
+It does not fix Brown Paper Bag: 170.03/97.22 is 7/4, which `metrically_related`
+does not cover and which is not being added on the strength of one track. That
+row stays wrong and stays flagged at 0.00 confidence, which is the behaviour the
+project wants when it cannot tell — a track in an unusual meter being reported
+as "no idea" is correct, not a bug to paper over.
+
+The remaining three failures are a separate question from scoring. In each the
+estimator was internally self-consistent at its own answer and never proposed
+the expected figure at all: Hey Boy Hey Girl at 127 against an expected 130
+(2.4%), Born Slippy at 140.09 against 138 (1.5%, and it matched a *Remastered*
+master), Inner City Life at 155 against 172. Published tempo figures disagree,
+masters differ, and `REFERENCE_TRACKS` is hand-entered, so those are as likely
+to be wrong expectations as wrong estimates. They are not being "fixed" by
+tuning until they agree — that would be fitting the estimator to three numbers
+of unverified provenance. They need independent ground truth first.
+
+## 25. What the live table says about key detection
+
+Only one reference track carries an expected key, and the estimator got it
+wrong: Sandstorm came back E minor at confidence **1.00** against an expected B
+minor, a fifth out and one step away on the Camelot wheel. Maximum confidence
+on a wrong answer is the worst failure shape this project has, because the whole
+contract with selecta is that confidence can be trusted.
+
+The other nine rows are unvalidated, and most of them report confidences between
+0.04 and 0.30, so they at least flag themselves as guesses. The 1.00 is the
+outlier and the problem.
+
+Two candidate causes, not yet distinguished: the EDM profile coefficients were
+transcribed from secondary sources and only ever verified against synthetic
+chord progressions (see entry 14), and a 30-second preview of a trance record is
+quite likely to be a breakdown that genuinely sits on the dominant. Telling
+those apart needs real key ground truth, which is why the reference set needs
+expected keys from a source that is not this estimator.

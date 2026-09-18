@@ -157,6 +157,13 @@ pub enum Groove {
     /// and 4. The octave trap is the snare period, which reads as half tempo —
     /// this is exactly the 87-vs-174 drum & bass failure.
     Breakbeat,
+    /// Four-on-the-floor kick with an offbeat stab as loud as the kick, the
+    /// shape trance and a lot of festival techno actually have. The trap is a
+    /// grid at 2/3 of the true tempo: it has period 1.5 beats, so it lands
+    /// alternately on a kick and on an offbeat stab, hitting something strong
+    /// every time while explaining only two thirds of the pattern. Measured on
+    /// a real preview of Sandstorm, which read 90.71 against a true 136.
+    OffbeatTrance,
 }
 
 /// Synthesize a drum pattern at `bpm` with the given groove.
@@ -185,6 +192,13 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
     // hats that are too loud make a wrong grid that lands on them score as well
     // as the right grid that lands on kicks.
     let hat = noise_burst(0.035, sample_rate, 0.10, &mut noise);
+    // An offbeat stab: a short tonal hit with a broadband edge, loud enough to
+    // rival the kick. Used only by OffbeatTrance.
+    let stab = {
+        let mut s = drum_hit(320.0, 0.10, sample_rate, 0.60, 9.0);
+        mix_at(&mut s, &noise_burst(0.02, sample_rate, 0.35, &mut noise), 0);
+        s
+    };
 
     let bars = (n as f32 / (beat * 4.0)).ceil() as usize;
     for bar in 0..bars {
@@ -198,6 +212,14 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
                 }
                 mix_at(&mut out, &snare, at(1.0));
                 mix_at(&mut out, &snare, at(3.0));
+            }
+            Groove::OffbeatTrance => {
+                for b in 0..4 {
+                    mix_at(&mut out, &kick, at(b as f32));
+                    // Deliberately kick-weight, not hat-weight: the whole point
+                    // is an offbeat a sparse grid is happy to land on.
+                    mix_at(&mut out, &stab, at(b as f32 + 0.5));
+                }
             }
             Groove::Breakbeat => {
                 mix_at(&mut out, &kick, at(0.0));

@@ -327,6 +327,50 @@ fn metrically_related(a: f32, b: f32) -> bool {
     RATIOS.iter().any(|r| (a / b - r).abs() < 0.03 * r.max(1.0))
 }
 
+/// How close a faster metrically-related finalist must score to the leader
+/// before it is preferred.
+///
+/// Measured on real previews, not chosen by feel. Sandstorm read 90.71 against
+/// a true 136.07, exactly 2/3; Brown Paper Bag read 97.22 against a true
+/// 170.03. In both the true tempo was already a finalist and lost by a hair —
+/// both estimates came back with a confidence of 0.00, which *is* the margin
+/// between leader and rival, so the two grids scored essentially level.
+///
+/// A sparse grid is a subset of a dense one's structure: sampling every third
+/// beat of a real groove can post a high mean and a low spread precisely
+/// because it skips the beats that would have cost it. Nothing in `comb_score`
+/// charges for the beats such a grid declines to explain, so a level score
+/// between two metrically-related grids is not really level, and the faster
+/// one is the better answer.
+///
+/// Kept deliberately tight. At 4% it only fires where the estimator is already
+/// reporting that it cannot tell the two apart, so it cannot overturn a
+/// confident correct reading.
+const METRICAL_TIE_MARGIN: f32 = 0.04;
+
+/// Choose between finalists that are metrically related and scored level.
+///
+/// Returns the leader unless a faster, metrically-related finalist is within
+/// [`METRICAL_TIE_MARGIN`] of it, in which case that one wins. See the
+/// constant for why level does not mean equal here.
+fn break_metrical_tie(scored: &[Candidate]) -> Candidate {
+    let leader = scored[0];
+    if leader.score <= 0.0 {
+        return leader;
+    }
+    let threshold = leader.score * (1.0 - METRICAL_TIE_MARGIN);
+    scored
+        .iter()
+        .filter(|c| {
+            c.bpm > leader.bpm && c.score >= threshold && metrically_related(c.bpm, leader.bpm)
+        })
+        // The fastest qualifying grid, not merely the next one up: 2/3 and 4/3
+        // of the same truth can both be on the shortlist.
+        .max_by(|a, b| a.bpm.total_cmp(&b.bpm))
+        .copied()
+        .unwrap_or(leader)
+}
+
 /// Estimate tempo from an onset strength envelope.
 pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     if env.values.len() < 32 {
@@ -361,7 +405,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     for c in &scored {
         tracing::debug!(bpm = c.bpm, score = c.score, "tempo candidate");
     }
-    let best = scored[0];
+    let best = break_metrical_tie(&scored);
 
     // The strongest reading that is not just the chosen tempo re-expressed.
     let rival = scored[1..]
@@ -482,7 +526,7 @@ mod tests {
 
     const SR: u32 = 44_100;
 
-    fn tempo_of(signal: &[f32]) -> TempoEstimate {
+    pub(super) fn tempo_of(signal: &[f32]) -> TempoEstimate {
         let stft = Stft::for_onsets(SR);
         let env = onset_envelope(&stft.magnitudes(signal, SR));
         estimate_tempo(&env).expect("tempo estimate")
@@ -671,5 +715,64 @@ mod tests {
         assert!(metrically_related(124.0, 124.0));
         assert!(metrically_related(120.0, 180.0));
         assert!(!metrically_related(124.0, 140.0));
+    }
+}
+
+#[cfg(test)]
+mod repro_tests {
+    use super::tests::tempo_of;
+    use super::*;
+    use crate::testsig::{self, Groove};
+
+    fn candidate(bpm: f32, score: f32) -> Candidate {
+        Candidate {
+            bpm,
+            score,
+            phase_frames: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_level_score_against_a_faster_related_grid_goes_to_the_faster() {
+        // Sandstorm's shape: the true 136.07 was a finalist and lost to exactly
+        // 2/3 of it by a hair. A sparse grid is a subset of a dense one's
+        // structure, so level is not really level.
+        let scored = vec![candidate(90.71, 1.000), candidate(136.07, 0.985)];
+        assert_eq!(break_metrical_tie(&scored).bpm, 136.07);
+    }
+
+    #[test]
+    fn a_clear_win_is_not_overturned() {
+        // 8% back is not a tie. The leader stands.
+        let scored = vec![candidate(90.71, 1.000), candidate(136.07, 0.920)];
+        assert_eq!(break_metrical_tie(&scored).bpm, 90.71);
+    }
+
+    #[test]
+    fn an_unrelated_tempo_never_wins_the_tie_break() {
+        // 1.33x apart is metrical; 1.21x is not anything, so it is a different
+        // reading rather than the same one counted differently.
+        let scored = vec![candidate(120.0, 1.000), candidate(145.0, 0.995)];
+        assert_eq!(break_metrical_tie(&scored).bpm, 120.0);
+    }
+
+    #[test]
+    fn the_tie_break_never_reaches_for_a_slower_grid() {
+        let scored = vec![candidate(136.0, 1.000), candidate(90.67, 0.999)];
+        assert_eq!(break_metrical_tie(&scored).bpm, 136.0);
+    }
+
+    #[test]
+    fn a_loud_offbeat_does_not_drag_the_grid_to_two_thirds() {
+        for bpm in [136.0f32, 140.0, 128.0] {
+            let sig = testsig::groove(bpm, 30.0, 44_100, Groove::OffbeatTrance);
+            let est = tempo_of(&sig);
+            assert!(
+                (est.bpm - bpm).abs() < 2.0,
+                "expected {bpm}, got {} (alternates {:?})",
+                est.bpm,
+                est.alternates.iter().map(|a| a.value).collect::<Vec<_>>()
+            );
+        }
     }
 }
