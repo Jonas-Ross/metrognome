@@ -16,6 +16,14 @@ use crate::error::{Error, Result};
 use crate::ratelimit::RateLimiter;
 use crate::types::TrackMatch;
 
+/// Bumped whenever a change to matching could make a query resolve to a
+/// different track.
+///
+/// The resolution cache is keyed by query text, not by algorithm, so without
+/// this a matching fix would never reach anyone whose cache is already warm:
+/// they would keep being served whichever track the old scorer picked.
+pub const MATCHER_VERSION: u32 = 2;
+
 /// How many search results to consider.
 ///
 /// Enough to get past a run of remixes and karaoke covers to the original;
@@ -113,18 +121,31 @@ fn normalize(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// Tokens that introduce a featured-artist credit.
+const FEATURE_MARKERS: [&str; 4] = ["feat", "featuring", "ft", "with"];
+
 /// Remove a trailing "feat. …" / "featuring …" / "ft. …" clause.
 ///
 /// Credit formatting is the single most common cosmetic difference between a
 /// library's metadata and the store's, and it is never a different recording.
-fn strip_features(s: &str) -> String {
+///
+/// `whole_may_be_credit` says whether the string is allowed to reduce to
+/// nothing. A parenthesized qualifier often is nothing but a credit —
+/// "Song (feat. Guest)" — so there the marker counts from the first token. A
+/// title's core is not: one that opens with "With" is far more likely to be a
+/// real title than an empty one, so its first token is kept whatever it says.
+fn strip_features(s: &str, whole_may_be_credit: bool) -> String {
     let n = normalize(s);
-    for marker in [" feat ", " featuring ", " ft ", " with "] {
-        if let Some(i) = n.find(marker) {
-            return n[..i].trim().to_string();
-        }
+    let tokens: Vec<&str> = n.split_whitespace().collect();
+    let keep = usize::from(!whole_may_be_credit);
+    match tokens
+        .iter()
+        .skip(keep)
+        .position(|t| FEATURE_MARKERS.contains(t))
+    {
+        Some(i) => tokens[..keep + i].join(" "),
+        None => n,
     }
-    n
 }
 
 /// Split a title into its core and its parenthesized qualifier.
@@ -134,13 +155,25 @@ fn split_qualifier(title: &str) -> (String, String) {
     let mut depth = 0i32;
     for ch in title.chars() {
         match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth = (depth - 1).max(0),
+            // The bracket itself becomes a space rather than vanishing: two
+            // adjacent groups, "(Club Mix) [feat. Guest]", would otherwise fuse
+            // into "club mixfeat guest" and neither part would be recognized.
+            '(' | '[' => {
+                depth += 1;
+                qual.push(' ');
+            }
+            ')' | ']' => {
+                depth = (depth - 1).max(0);
+                qual.push(' ');
+            }
             _ if depth > 0 => qual.push(ch),
             _ => core.push(ch),
         }
     }
-    let mut qual = normalize(&qual);
+    // A qualifier that is only a credit ("(feat. Guest)") must reduce to
+    // nothing, or a store title carrying one scores far below a query without
+    // it even though they are the same recording.
+    let mut qual = strip_features(&qual, true);
     for neutral in NEUTRAL_QUALIFIERS {
         qual = qual.replace(neutral, " ");
     }
@@ -150,7 +183,7 @@ fn split_qualifier(title: &str) -> (String, String) {
         .filter(|t| !(t.len() == 4 && t.chars().all(|c| c.is_ascii_digit())))
         .collect::<Vec<_>>()
         .join(" ");
-    (strip_features(&core), qual.trim().to_string())
+    (strip_features(&core, false), qual.trim().to_string())
 }
 
 /// Levenshtein distance as a 0-1 similarity.
@@ -231,8 +264,8 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
         title *= INEXACT_TITLE_CEILING;
     }
 
-    let q_artist = strip_features(query_artist);
-    let c_artist = strip_features(cand.artist_name.as_deref().unwrap_or(""));
+    let q_artist = strip_features(query_artist, false);
+    let c_artist = strip_features(cand.artist_name.as_deref().unwrap_or(""), false);
     let mut artist = similarity(&q_artist, &c_artist);
     // A compilation credits "Various Artists" or adds collaborators. If every
     // word of the query artist appears in the candidate's, that is a credit
@@ -416,12 +449,15 @@ mod tests {
 
     #[test]
     fn strips_feature_credits() {
-        assert_eq!(strip_features("Rapture (feat. Nadia Ali)"), "rapture");
         assert_eq!(
-            strip_features("One More Time ft. Romanthony"),
+            strip_features("Rapture (feat. Nadia Ali)", false),
+            "rapture"
+        );
+        assert_eq!(
+            strip_features("One More Time ft. Romanthony", false),
             "one more time"
         );
-        assert_eq!(strip_features("Plain Title"), "plain title");
+        assert_eq!(strip_features("Plain Title", false), "plain title");
     }
 
     #[test]
@@ -498,6 +534,40 @@ mod tests {
         // the tiebreak is what decides.
         let picked = pick_best("deadmau5", "Strobe", &[reissue, plain]).unwrap();
         assert_eq!(picked.track_id, 1);
+    }
+
+    #[test]
+    fn a_store_side_feature_credit_does_not_make_the_match_uncertain() {
+        // The store spells the credit in the title; the library does not. That
+        // is cosmetic, so the qualifier must reduce to nothing rather than
+        // scoring as a different edit.
+        assert_eq!(
+            split_qualifier("Rapture (feat. Nadia Ali)"),
+            ("rapture".into(), String::new())
+        );
+        let credited = ItunesTrack {
+            track_id: Some(1),
+            track_name: Some("Rapture (feat. Nadia Ali)".into()),
+            artist_name: Some("iiO".into()),
+            collection_name: None,
+            release_date: None,
+            primary_genre_name: None,
+            preview_url: Some("https://example/p.m4a".into()),
+            track_time_millis: None,
+        };
+        let m = pick_best("iiO", "Rapture", &[credited]).expect("match");
+        assert!(
+            !m.uncertain,
+            "a feature credit alone must not flag a match uncertain, score {}",
+            m.match_score
+        );
+
+        // A credit inside a real qualifier is stripped without taking the rest
+        // of the qualifier with it.
+        assert_eq!(
+            split_qualifier("Strobe (Club Mix) [feat. Guest]"),
+            ("strobe".into(), "club mix".into())
+        );
     }
 
     #[test]
