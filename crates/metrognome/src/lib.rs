@@ -44,4 +44,4 @@ pub use types::{
 ///
 /// The cache stores this alongside each row and treats a mismatch as a miss, so
 /// an algorithm change never silently serves stale estimates.
-pub const ALGORITHM_VERSION: u32 = 4;
+pub const ALGORITHM_VERSION: u32 = 5;

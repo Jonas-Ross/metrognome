@@ -140,7 +140,8 @@ const CONSISTENCY_PENALTY: f32 = 1.0;
 fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     let none = CombScore {
         score: 0.0,
-        precision: 0.0,
+        mean: 0.0,
+        sd: 0.0,
         phase_frames: 0.0,
     };
     if bpm <= 0.0 || env.len() < 2 {
@@ -199,7 +200,8 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
             let score = precision - MISS_PENALTY * missed;
             best = CombScore {
                 score,
-                precision,
+                mean,
+                sd,
                 phase_frames: phase,
             };
         }
@@ -243,16 +245,26 @@ fn recall(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
 /// A beat grid's fit at one tempo.
 #[derive(Debug, Clone, Copy)]
 struct CombScore {
-    /// Ranking score: precision times recall. Only ever compared against other
-    /// candidates on the same audio.
+    /// Ranking score: precision less the miss penalty. Only ever compared
+    /// against other candidates on the same audio.
     score: f32,
-    /// The precision half alone. Confidence reads this rather than `score`,
-    /// because recall is structurally genre-dependent — a breakbeat with
-    /// sixteenth hats genuinely carries much of its onset energy off the beat
-    /// grid, and letting that drag its confidence down would have selecta
-    /// discarding drum & bass for being drum & bass. Recall decides *which*
-    /// grid wins; it should not decide how sure we are of the winner.
-    precision: f32,
+    /// Mean onset strength at this grid's beat positions, in standard
+    /// deviations above background.
+    ///
+    /// Confidence reads `mean` and `sd` rather than `score`, because recall is
+    /// structurally genre-dependent — a breakbeat with sixteenth hats genuinely
+    /// carries much of its onset energy off the beat grid, and letting that
+    /// drag its confidence down would have selecta discarding drum & bass for
+    /// being drum & bass. Recall decides *which* grid wins; it should not
+    /// decide how sure we are of the winner.
+    ///
+    /// They are carried separately rather than as `mean - sd`: that difference
+    /// is a sound way to *rank* grids on one track, where every candidate
+    /// shares an envelope, and a useless way to judge one grid against a fixed
+    /// threshold, where it is routinely negative on perfectly good readings.
+    mean: f32,
+    /// Spread of onset strength across those beats, same units.
+    sd: f32,
     phase_frames: f32,
 }
 
@@ -302,7 +314,8 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
     let mut best = Candidate {
         bpm: coarse_bpm,
         score: c.score,
-        precision: c.precision,
+        mean: c.mean,
+        sd: c.sd,
         phase_frames: c.phase_frames,
     };
     if clip_beats < 4.0 {
@@ -321,7 +334,8 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
             best = Candidate {
                 bpm,
                 score: c.score,
-                precision: c.precision,
+                mean: c.mean,
+                sd: c.sd,
                 phase_frames: c.phase_frames,
             };
         }
@@ -334,7 +348,8 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
 struct Candidate {
     bpm: f32,
     score: f32,
-    precision: f32,
+    mean: f32,
+    sd: f32,
     phase_frames: f32,
 }
 
@@ -436,7 +451,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         c.bpm = precision_pass(&env.values, fps, c.bpm);
         let raw = comb_score(&env.values, fps, c.bpm);
         c.score = raw.score;
-        c.precision = raw.precision;
+        c.mean = raw.mean;
+        c.sd = raw.sd;
         c.phase_frames = raw.phase_frames;
     }
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -446,14 +462,24 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     let best = scored[0];
 
     // The strongest reading that is not just the chosen tempo re-expressed.
+    // `None` when every other finalist is a metric restatement of the winner,
+    // which is the *most* confident case, not the least: nothing else on the
+    // shortlist is competing for a different answer. Defaulting to a score of
+    // zero instead would read as a rival that beat the winner, since comb
+    // scores on real music are routinely negative.
     let rival = scored[1..]
         .iter()
         .find(|c| !metrically_related(c.bpm, best.bpm))
-        .map(|c| c.score)
-        .unwrap_or(0.0);
+        .map(|c| c.score);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
-    let confidence = confidence(best.precision, rival, periodicity, observed_beats);
+    let confidence = confidence(
+        best.mean,
+        best.sd,
+        rival.map(|r| best.score - r),
+        periodicity,
+        observed_beats,
+    );
 
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
@@ -511,9 +537,22 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
 /// with no periodic structure sits near 0.
 const PERIODICITY_SATURATION: f32 = 0.5;
 
-/// Comb score at which the beat grid is considered unambiguously strong.
-/// Clean grooves measure 3-6; there is no useful information past this.
+/// Mean beat strength at which the grid is considered unambiguously strong.
+///
+/// Measured on the winner's beat positions in standard deviations above
+/// background, where a clean four-on-the-floor reaches 5 and a wrong grid sits
+/// near 0. Half of clean is already past any real doubt that a beat is there.
 const CLARITY_SATURATION: f32 = 2.5;
+
+/// Score gap over the best unrelated reading at which the winner is considered
+/// clearly ahead.
+///
+/// An absolute difference, not a ratio: comb scores are z-scored units that go
+/// negative on real music, so dividing by the winner inverts the meaning
+/// exactly where it matters. A full standard deviation is the same order as
+/// [`CONSISTENCY_PENALTY`], the discrimination the scorer itself makes, so a
+/// gap that size means the two readings were never really in contention.
+const MARGIN_SATURATION: f32 = 1.0;
 
 /// Beats of audio at which the estimate is considered fully supported.
 ///
@@ -522,21 +561,38 @@ const CLARITY_SATURATION: f32 = 2.5;
 /// than reporting the same confidence as a full clip.
 const COVERAGE_SATURATION: f32 = 32.0;
 
-/// Fold three independent signals into a single 0-1 score.
+/// Fold five independent signals into a single 0-1 score.
 ///
 /// Multiplicative rather than averaged: each factor can veto on its own, which
 /// is the behaviour we want. A clip with no beat at all must not score well
 /// just because whatever it found was unrivalled.
-/// `best` is the winner's *precision*, not its ranking score. See
-/// [`CombScore::precision`].
-fn confidence(best: f32, rival: f32, periodicity: f32, observed_beats: f32) -> f32 {
-    // How far above background the weakest beats in the grid sit.
-    let clarity = (best / CLARITY_SATURATION).clamp(0.0, 1.0);
-    // How much better the winner is than the best unrelated reading.
-    let margin = if best <= 0.0 {
-        0.0
+///
+/// Every factor is either scale-free or measured in the envelope's own z-scored
+/// units, so the same number means the same thing on a sparse house loop and on
+/// a dense breakbeat. An earlier version read the winner's `mean - sd`
+/// directly, which is neither: that quantity is negative on most real music,
+/// so it clamped to zero and reported no confidence in answers that were
+/// correct.
+///
+/// `gap` is the winner's score over the best unrelated reading, or `None` when
+/// there is no unrelated reading to beat.
+fn confidence(mean: f32, sd: f32, gap: Option<f32>, periodicity: f32, observed_beats: f32) -> f32 {
+    // How far above background this grid's beats sit on average.
+    let clarity = (mean / CLARITY_SATURATION).clamp(0.0, 1.0);
+    // Whether they are alike. `mean / (mean + sd)` is 1 for beats of identical
+    // strength and 0.5 where the spread equals the level, with no dependence on
+    // how loud the track is. A grid landing on a kick, then a hat, then nothing
+    // scores a decent mean and fails here, which is the metric decoy it exists
+    // to catch.
+    let evenness = if mean > 0.0 {
+        (mean / (mean + sd)).clamp(0.0, 1.0)
     } else {
-        ((best - rival.max(0.0)) / best).clamp(0.0, 1.0)
+        0.0
+    };
+    // How much better the winner is than the best unrelated reading.
+    let margin = match gap {
+        Some(g) => (g / MARGIN_SATURATION).clamp(0.0, 1.0),
+        None => 1.0,
     };
     // Whether the clip is periodic at this rate at all. This is the factor that
     // collapses on a beatless intro, where the flux is noise and the comb score
@@ -547,7 +603,11 @@ fn confidence(best: f32, rival: f32, periodicity: f32, observed_beats: f32) -> f
 
     // Exponents weight clarity hardest: it is the only factor that is low for
     // both of the two real failure modes (no beat, and a beat we missed).
-    clarity.powf(0.5) * margin.powf(0.25) * periodic.powf(0.25) * coverage.powf(0.25)
+    clarity.powf(0.5)
+        * evenness.powf(0.25)
+        * margin.powf(0.25)
+        * periodic.powf(0.25)
+        * coverage.powf(0.25)
 }
 
 fn round2(v: f32) -> f32 {
@@ -747,6 +807,45 @@ mod tests {
             pulse_strength: 0.0,
         };
         assert!(estimate_tempo(&env).is_none());
+    }
+
+    #[test]
+    fn a_strong_but_uneven_grid_still_reports_confidence() {
+        // The shape every real track in the validation set has: beats plainly
+        // above background, but a spread wider than the level itself, because
+        // the clip contains a breakdown as well as a drop. `mean - sd` is
+        // negative here, which is what used to zero the confidence on answers
+        // that were correct.
+        let (mean, sd) = (4.0, 5.0);
+        assert!(mean - CONSISTENCY_PENALTY * sd < 0.0, "not the bug's shape");
+        let c = confidence(mean, sd, Some(1.5), 0.6, 64.0);
+        assert!(c > 0.3, "got {c}");
+
+        // Evenness still separates it from a grid whose beats are alike.
+        let even = confidence(mean, 0.5, Some(1.5), 0.6, 64.0);
+        assert!(even > c, "even {even} should beat uneven {c}");
+    }
+
+    #[test]
+    fn a_grid_with_no_beat_under_it_reports_nothing() {
+        // Clarity has to veto on its own: no amount of periodicity, coverage or
+        // absent competition may lift a grid that sits at background level.
+        assert_eq!(confidence(0.0, 0.1, None, 1.0, 1000.0), 0.0);
+        assert!(confidence(0.05, 0.1, None, 1.0, 1000.0) < 0.2);
+    }
+
+    #[test]
+    fn an_uncontested_winner_is_not_penalized_for_having_no_rival() {
+        // Every finalist being a metric restatement of the winner is the most
+        // confident case there is. Scoring it as though a rival had tied would
+        // invert that, and did: the old default rival score of zero beat a
+        // winner whose own score was negative.
+        let contested = confidence(4.0, 1.0, Some(0.1), 0.6, 64.0);
+        let uncontested = confidence(4.0, 1.0, None, 0.6, 64.0);
+        assert!(
+            uncontested > contested,
+            "uncontested {uncontested} vs narrowly contested {contested}"
+        );
     }
 
     #[test]

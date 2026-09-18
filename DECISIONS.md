@@ -462,3 +462,42 @@ lookups on a command that is already rate-limited and run by hand.
 
 `analyze` and `batch` are unchanged — for them the cache is the point, and a
 version bump is the correct and sufficient control.
+
+## 30. Confidence reads scale-free factors, never `mean - sd`
+
+The first live run of entry 28's scoring got the tempo right on Sandstorm
+(136.07) and Brown Paper Bag (170.03) and reported confidence **0.00** on both.
+selecta branches on confidence, so a correct answer at 0.00 is thrown away —
+the worst outcome available, and worse than the wrong answer it replaced.
+
+The cause is a category error. `confidence` was handed the winner's
+`mean - CONSISTENCY_PENALTY * sd` and divided it by a fixed saturation
+constant. That difference is a sound way to *rank* grids on one track, where
+every candidate shares an envelope; it is meaningless against a global
+threshold, because on real music it is routinely negative — entry 28's own
+comment says so. Negative clarity clamps to zero and the product collapses.
+
+Confidence now takes `mean` and `sd` separately:
+
+- **clarity** = `mean / 2.5`, beat strength in z-scored units, which is
+  comparable across tracks by construction.
+- **evenness** = `mean / (mean + sd)`, scale-free: 1 for beats of equal
+  strength, 0.5 where the spread equals the level. This carries what the
+  subtraction was for — a grid alternating kick, hat, nothing fails here — with
+  no dependence on how loud the track is.
+- **margin** = the winner's score over the best unrelated reading, as an
+  absolute gap in the same units rather than a ratio. The old ratio form
+  divided by the winner's score, which inverts when that score is negative.
+
+A second bug fell out of the same read: with no unrelated finalist, `rival`
+defaulted to a score of `0.0`. Comb scores on real music are negative, so
+"nothing competes with this reading" scored as "a rival beat it" — the most
+confident case in the search producing the least confident output. It is now an
+`Option`, and `None` saturates the margin.
+
+`ALGORITHM_VERSION` goes to 5: confidences are not comparable across this.
+
+What this does not do is change which tempo wins. Ranking still uses
+`score`, untouched, so the accuracy column of the next run should be identical
+to the last one and only the confidence column should move. If a tempo moves,
+this change did something it was not supposed to.
