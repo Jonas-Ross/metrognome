@@ -1,9 +1,8 @@
 //! Wiring: resolve, fetch, decode, analyze.
 //!
-//! The split here is the point of the crate. [`analyze_pcm`] is pure DSP over
-//! samples and a sample rate — it has no idea a preview URL exists, which is
-//! what lets a future live-capture path reuse it unchanged. [`Analyzer`] is the
-//! preview-specific orchestration layered on top.
+//! [`analyze_pcm`] is pure DSP over samples and a sample rate, with no idea a
+//! preview URL exists; [`Analyzer`] is the preview-specific orchestration on
+//! top. That split is what lets a live-capture path reuse the DSP unchanged.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -37,9 +36,7 @@ impl AnalysisOptions {
 
 /// Estimate every supported feature from raw mono PCM, with default options.
 ///
-/// Takes samples and a sample rate and nothing else. Anything that needs to
-/// know where audio came from belongs above this line, not below it — that is
-/// what lets a live capture tap reuse this unchanged.
+/// Anything that needs to know where audio came from belongs above this line.
 pub fn analyze_pcm(samples: &[f32], sample_rate: u32) -> Features {
     analyze_pcm_with(samples, sample_rate, &AnalysisOptions::default())
 }
@@ -125,9 +122,8 @@ impl Analyzer {
 
     /// Resolve, fetch and analyze one query.
     ///
-    /// Never returns `Err`: a failure is an [`Analysis`] with `status: "error"`,
-    /// because the batch path must be able to report one bad track without
-    /// losing the rest.
+    /// Never returns `Err`: a failure is an [`Analysis`] with
+    /// `status: "error"`, so one bad track cannot kill a batch.
     pub async fn analyze(&self, query: Query) -> Analysis {
         let track = match self.resolve(&query).await {
             Ok(t) => t,
@@ -137,11 +133,8 @@ impl Analyzer {
         let options_key = self.analysis.cache_key();
         if let Some(hit) = self.cached(track.track_id, &options_key) {
             // Features and audio come from the cache; the track does not. The
-            // analysis cache is keyed by store track ID, so two different
-            // queries share a row, but `match_score` and `uncertain` describe
-            // how well *this* query matched. Returning the cached row's match
-            // metadata would report a weak fuzzy query with an earlier exact
-            // query's score, and a consumer would trust a bad match.
+            // cache is keyed by store track ID, so two queries share a row, but
+            // `match_score` describes how well *this* query matched.
             let mut out = Analysis::ok(query, Some(track), hit.features, hit.audio);
             out.cached = true;
             return out;

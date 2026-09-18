@@ -1,8 +1,7 @@
 //! Library error type.
 //!
-//! Every fallible path in this crate funnels into [`Error`]. The CLI wraps these
-//! with `anyhow` for human-facing context; machine consumers get the `kind()`
-//! discriminator, which is stable and safe to branch on.
+//! The CLI wraps these with `anyhow` for human context; machine consumers get
+//! the `kind()` discriminator, which is stable and safe to branch on.
 
 use std::fmt;
 

@@ -1,9 +1,8 @@
 //! End-to-end `analyze` against a local stand-in for the iTunes API.
 //!
-//! This is the only test that exercises resolve -> fetch -> decode -> DSP as one
-//! path. It serves a fixture search response and a WAV rendered from a known
-//! groove, so the assertion at the end is that the whole pipeline recovers the
-//! tempo that was synthesized at the start. No network, no Apple.
+//! The only test exercising resolve -> fetch -> decode -> DSP as one path. It
+//! serves a fixture search response and a WAV rendered from a known groove, and
+//! asserts the pipeline recovers the tempo that went in. No network.
 
 use std::net::SocketAddr;
 
@@ -69,12 +68,10 @@ async fn serve() -> SocketAddr {
 
 /// An analyzer config with no cache.
 ///
-/// `AnalyzerConfig::default()` points at the real user cache, which is wrong
-/// for a test twice over: it writes to whatever machine runs the suite, and it
-/// reads back resolutions from earlier runs whose preview URLs point at the
-/// random port that run's stand-in server used and no longer listens on. A
-/// cached row also means the test passes without exercising the fetch and
-/// decode path it exists to cover.
+/// `AnalyzerConfig::default()` points at the real user cache: it writes to
+/// whoever runs the suite, serves back resolutions whose preview URLs name a
+/// long-dead random port, and lets the test pass without fetching or decoding
+/// anything.
 fn uncached() -> AnalyzerConfig {
     AnalyzerConfig {
         cache_path: None,

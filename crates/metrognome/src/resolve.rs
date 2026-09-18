@@ -1,14 +1,9 @@
 //! Resolving an artist and title to an iTunes store track with a preview URL.
 //!
-//! selecta only has Music.app persistent IDs, which are not store IDs, so
-//! artist/title search is the primary path and matching is necessarily fuzzy:
-//! "feat." spellings differ, releases carry "(Remastered 2011)", and a remix
-//! shares its title with the original while sharing neither its tempo nor its
-//! key. Matching is therefore split from HTTP — [`pick_best`] is a pure
-//! function over parsed results, and the tests drive it from recorded fixtures.
-//!
-//! Every response includes the matched track's own metadata and a match score,
-//! so a wrong match is visible to the caller rather than silently believed.
+//! selecta has Music.app persistent IDs, not store IDs, so artist/title search
+//! is the primary path and matching is necessarily fuzzy. Matching is split
+//! from HTTP — [`pick_best`] is pure, driven in tests from recorded fixtures —
+//! and every response carries a match score, so a wrong match is visible.
 
 use serde::Deserialize;
 
@@ -19,9 +14,8 @@ use crate::types::TrackMatch;
 /// Bumped whenever a change to matching could make a query resolve to a
 /// different track.
 ///
-/// The resolution cache is keyed by query text, not by algorithm, so without
-/// this a matching fix would never reach anyone whose cache is already warm:
-/// they would keep being served whichever track the old scorer picked.
+/// The resolution cache is keyed by query text, so without this a matching fix
+/// would never reach anyone whose cache is already warm.
 pub const MATCHER_VERSION: u32 = 2;
 
 /// How many search results to consider.
@@ -38,10 +32,9 @@ pub const MATCH_CONFIDENT_AT_OR_ABOVE: f32 = 0.85;
 
 /// Qualifiers that name a different master of the *same performance*.
 ///
-/// Stripping these makes "Around the World (Radio Edit)" match "Around the
-/// World" without also making "Around the World (Deep Dish Remix)" match it —
-/// a remix is a different recording with its own tempo and often its own key,
-/// and matching one to the other would poison the feature data.
+/// Stripping these matches "(Radio Edit)" to the plain title without also
+/// matching "(Deep Dish Remix)", which is a different recording with its own
+/// tempo and key.
 const NEUTRAL_QUALIFIERS: [&str; 14] = [
     "original mix",
     "album version",
@@ -126,14 +119,12 @@ const FEATURE_MARKERS: [&str; 4] = ["feat", "featuring", "ft", "with"];
 
 /// Remove a trailing "feat. …" / "featuring …" / "ft. …" clause.
 ///
-/// Credit formatting is the single most common cosmetic difference between a
-/// library's metadata and the store's, and it is never a different recording.
+/// The most common cosmetic difference between a library's metadata and the
+/// store's, and never a different recording.
 ///
-/// `whole_may_be_credit` says whether the string is allowed to reduce to
-/// nothing. A parenthesized qualifier often is nothing but a credit —
-/// "Song (feat. Guest)" — so there the marker counts from the first token. A
-/// title's core is not: one that opens with "With" is far more likely to be a
-/// real title than an empty one, so its first token is kept whatever it says.
+/// `whole_may_be_credit` allows the string to reduce to nothing. A
+/// parenthesized qualifier often is pure credit — "Song (feat. Guest)" — but a
+/// title opening with "With" is more likely real, so its first token is kept.
 fn strip_features(s: &str, whole_may_be_credit: bool) -> String {
     let n = normalize(s);
     let tokens: Vec<&str> = n.split_whitespace().collect();
@@ -247,10 +238,9 @@ const QUALIFIER_WEIGHT: f32 = 0.25;
 /// Ceiling on the title score for a candidate whose title is not character-for
 /// -character what was asked for.
 ///
-/// Without it "Around the World" and "Around the World (Radio Edit)" tie for a
-/// query of "Around the World", because the qualifier is a neutral one and gets
-/// stripped from both sides. The gap is small on purpose: it settles a tie, it
-/// does not outrank a genuinely better match.
+/// A neutral qualifier is stripped from both sides, so without this the plain
+/// title and "(Radio Edit)" tie. Small on purpose: it settles a tie rather than
+/// outranking a better match.
 const INEXACT_TITLE_CEILING: f32 = 0.97;
 
 /// Score one candidate against the query. 0-1.
@@ -283,9 +273,8 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
 
 /// Choose the best candidate for a query, ignoring any without a preview.
 ///
-/// A track with no `previewUrl` cannot be analyzed, so it is not a match no
-/// matter how well its metadata scores — returning one would produce a
-/// confident-looking result with nothing behind it.
+/// A track with no `previewUrl` cannot be analyzed, however well its metadata
+/// scores.
 pub fn pick_best(artist: &str, title: &str, candidates: &[ItunesTrack]) -> Option<TrackMatch> {
     candidates
         .iter()

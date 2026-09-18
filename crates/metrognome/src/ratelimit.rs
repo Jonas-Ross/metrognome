@@ -1,9 +1,8 @@
 //! Token-bucket rate limiting for the iTunes endpoints.
 //!
-//! Apple documents no hard number, but the Search API is widely reported to
-//! start refusing around 20 requests per minute per address. Going over it gets
-//! the address throttled, which is slower than being polite in the first place,
-//! so the limiter is not optional and is not a knob to turn up.
+//! Apple documents no number; the Search API is reported to refuse around 20
+//! requests per minute per address, and being throttled is slower than being
+//! polite. The limiter is not optional and not a knob to turn up.
 
 use std::time::Duration;
 
@@ -16,9 +15,8 @@ pub const DEFAULT_PER_MINUTE: f64 = 18.0;
 
 /// Default burst size.
 ///
-/// A small burst lets a handful of tracks start immediately instead of being
-/// spaced out from a standing start, while the refill rate still bounds the
-/// long-run average.
+/// Lets a handful of tracks start immediately rather than spacing out from a
+/// standing start; the refill rate still bounds the long-run average.
 pub const DEFAULT_BURST: f64 = 5.0;
 
 #[derive(Debug)]
@@ -52,9 +50,8 @@ impl RateLimiter {
 
     /// Wait until a request may be issued, then consume its token.
     ///
-    /// The token is taken while the lock is held and the sleep happens after it
-    /// is released, so concurrent callers queue in order rather than all waking
-    /// to race for the same token.
+    /// The token is taken under the lock and the sleep happens after releasing
+    /// it, so concurrent callers queue rather than racing for the same token.
     pub async fn acquire(&self) {
         let wait = {
             let mut bucket = self.bucket.lock().await;
@@ -79,10 +76,9 @@ impl Default for RateLimiter {
 
 /// Consume one token, returning how long the caller must wait first.
 ///
-/// Split out from [`RateLimiter::acquire`] so the arithmetic is testable
-/// without sleeping: the bucket is allowed to go negative, and the debt is the
-/// wait. That is what makes a queue of callers come out evenly spaced instead
-/// of thundering.
+/// Split from [`RateLimiter::acquire`] so the arithmetic is testable without
+/// sleeping. The bucket may go negative and the debt is the wait, which is what
+/// spaces a queue of callers evenly.
 fn take(bucket: &mut Bucket, now: Instant, capacity: f64, refill_per_sec: f64) -> Duration {
     let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
     bucket.tokens = (bucket.tokens + elapsed * refill_per_sec).min(capacity);

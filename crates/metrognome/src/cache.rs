@@ -1,12 +1,9 @@
 //! On-disk result cache, keyed by resolved store track ID.
 //!
-//! Analysis costs a network round trip and a second of CPU; a library is tens
-//! of thousands of tracks and gets re-scanned whenever the consumer feels like
-//! it. Caching the *result* (never the audio) makes the second pass free.
-//!
-//! A row is only a hit when the algorithm version and the analysis options both
-//! match. Anything else is a miss, so a DSP change can never silently serve
-//! estimates produced by code that no longer exists.
+//! Caches the result, never the audio, so re-scanning a library of tens of
+//! thousands of tracks is free the second time. A row hits only when the
+//! algorithm version and analysis options both match, so a DSP change can
+//! never silently serve estimates from code that no longer exists.
 
 use std::path::{Path, PathBuf};
 
@@ -114,10 +111,9 @@ impl Cache {
 
     /// Fetch a cached resolution for a query, or `None`.
     ///
-    /// Resolution is cached separately from analysis because it is the
-    /// rate-limited step. Without this, re-running a library of ten thousand
-    /// tracks against a full cache would still take nine hours of waiting on
-    /// the search API to be told what it already said.
+    /// Cached separately from analysis because it is the rate-limited step:
+    /// ten thousand tracks against a warm analysis cache would still be nine
+    /// hours of waiting on the search API.
     pub fn get_resolution(&self, query_key: &str) -> Result<Option<TrackMatch>> {
         let matched: Option<String> = self
             .conn

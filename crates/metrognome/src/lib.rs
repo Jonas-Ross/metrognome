@@ -1,19 +1,9 @@
 //! BPM and musical-key estimation from short audio clips.
 //!
-//! The crate is layered so that analysis never assumes where audio came from:
-//!
-//! - [`decode`] turns encoded bytes into mono `f32` PCM.
-//! - [`dsp`] and [`tempo`] take PCM (or an envelope derived from it) and a
-//!   sample rate, and know nothing else about the world.
-//! - [`fetch`] is the only network path for audio, and it keeps bytes in memory.
-//! - [`resolve`] and [`ratelimit`] are the iTunes-specific I/O, kept to one
-//!   side so the analysis path can be driven without them.
-//! - [`types`] is the versioned JSON contract with consumers.
-//!
-//! [`analyze_pcm`] is the entry point for "samples in, features out".
-//!
-//! Analysis entry points take PCM samples plus a sample rate and nothing else,
-//! so a live capture tap can feed them exactly as a downloaded preview does.
+//! Layered so analysis never assumes where audio came from: [`dsp`] and
+//! [`tempo`] see only PCM and a sample rate, while [`fetch`], [`resolve`] and
+//! [`ratelimit`] hold all the iTunes-specific I/O. [`analyze_pcm`] is the
+//! samples-in, features-out entry point; [`types`] is the JSON contract.
 
 #![warn(missing_docs)]
 

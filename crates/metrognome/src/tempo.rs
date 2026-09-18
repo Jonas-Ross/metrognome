@@ -1,17 +1,6 @@
-//! Tempo estimation.
-//!
-//! Three stages, each doing one job:
-//!
-//! 1. **Candidates** come from the autocorrelation of the onset envelope. The
-//!    ACF is good at spotting *a* periodicity and bad at choosing which of a
-//!    tempo's octaves is the real one, so it is used only to propose.
-//! 2. **The canonical fold** collapses every candidate into one octave. This is
-//!    where the 87-vs-174 problem is handled: within a single octave window an
-//!    octave error cannot be expressed.
-//! 3. **Scoring** is a phase-aligned comb filter over the whole clip. At the
-//!    true tempo every beat slot lands on an onset; a 1% error accumulates into
-//!    a visible misalignment over 80+ beats, which makes the score sharp enough
-//!    to refine tempo to a fraction of a BPM.
+//! Tempo estimation: the onset envelope's autocorrelation proposes candidates,
+//! the canonical fold collapses them into one octave so an octave error cannot
+//! be expressed, and a phase-aligned comb filter scores and refines them.
 
 use crate::dsp::{autocorrelation, interp_at, smooth, OnsetEnvelope};
 use crate::types::{Alternate, TempoEstimate, UNCERTAIN_AT_OR_BELOW};
@@ -21,10 +10,8 @@ pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@1";
 
 /// Low edge (inclusive) of the canonical one-octave output window.
 ///
-/// 90-180 is chosen to hold every idiom this is built for in a single octave:
-/// house at 120-128, techno and trance at 130-145, drum & bass at 170-176. Any
-/// candidate outside it is doubled or halved until it lands inside, which makes
-/// an octave error structurally impossible. See DECISIONS.md for the cost.
+/// 90-180 holds house, techno and drum & bass in one octave, so an octave error
+/// cannot be expressed. See DECISIONS.md for the cost.
 pub const CANONICAL_LOW_BPM: f32 = 90.0;
 
 /// High edge (exclusive) of the canonical output window.
@@ -32,9 +19,8 @@ pub const CANONICAL_HIGH_BPM: f32 = 180.0;
 
 /// Widest tempo the autocorrelation search looks at.
 ///
-/// Wider than the output window on purpose: the true tempo's half and double
-/// are usually stronger ACF peaks than the tempo itself, and the fold needs
-/// them to be found before it can bring them home.
+/// Wider than the output window: a tempo's half and double are usually stronger
+/// ACF peaks than the tempo itself, and the fold needs them found first.
 const SEARCH_MIN_BPM: f32 = 45.0;
 
 /// Fastest tempo the autocorrelation search looks at.
@@ -42,10 +28,8 @@ const SEARCH_MAX_BPM: f32 = 280.0;
 
 /// Centre of the log-normal prior applied while picking ACF peaks.
 ///
-/// Only biases which periodicities are *proposed*; no prior is applied once
-/// candidates are inside the canonical window, because the window already
-/// encodes the genre assumption and stacking a second one on top would quietly
-/// pull every estimate toward 128.
+/// Biases only which periodicities are proposed. The canonical window already
+/// encodes the genre assumption; a second prior would pull everything to 128.
 const PRIOR_CENTRE_BPM: f32 = 128.0;
 
 /// Width of that prior, in octaves. Wide enough that 174 and 87 are both
@@ -65,16 +49,13 @@ const REFINE_DRIFT_BEATS: f32 = 1.0 / 16.0;
 
 /// Width of the Hann kernel applied to the envelope before comb scoring.
 ///
-/// 30 ms is roughly a drum transient plus the timing jitter of a
-/// hand-programmed groove. Without it the comb score is unsearchable (see
-/// [`crate::dsp::smooth`]); much wider and a 16th-note grid at 174 BPM starts
-/// to blur into the beat grid it is supposed to be distinguished from.
+/// 30 ms is a drum transient plus programmed jitter. Narrower and the comb
+/// score is unsearchable; wider and a 16th grid at 174 blurs into the beat.
 const SCORING_SMOOTH_SECS: f32 = 0.030;
 
 /// Relative span of the final precision pass, run on the unsmoothed envelope.
 ///
-/// Only has to cover the error the smoothed search can make, which is bounded
-/// by the smoothed peak's own width.
+/// Only has to cover the error the smoothed search can make.
 const PRECISION_SPAN: f32 = 0.005;
 
 /// Precision-pass step, expressed as end-of-clip drift in envelope frames.
@@ -89,10 +70,8 @@ const MAX_FINALISTS: usize = 6;
 
 /// Ratios expanded from each ACF peak before folding.
 ///
-/// Octave relatives are handled by the fold. These are the *metric* confusions
-/// that survive it: a shuffle or a half-bar pattern can make the strongest
-/// periodicity 2/3 or 3/4 of the real beat, and folding a wrong ratio just
-/// yields a wrong in-window answer.
+/// The fold handles octaves. These are the metric confusions that survive it: a
+/// shuffle or half-bar pattern can peak at 2/3 or 3/4 of the real beat.
 const CANDIDATE_RATIOS: [f32; 5] = [1.0, 3.0 / 2.0, 2.0 / 3.0, 4.0 / 3.0, 3.0 / 4.0];
 
 /// Fold `bpm` into `[CANONICAL_LOW_BPM, CANONICAL_HIGH_BPM)` by octaves.
@@ -117,26 +96,17 @@ fn prior(bpm: f32) -> f32 {
 
 /// Penalty on the spread of onset strength across beat positions.
 ///
-/// The score is `mean - CONSISTENCY_PENALTY * stddev`, which at 1.0 reads as
-/// "the level the weakest beats reach" rather than "the average beat level".
-/// That distinction is what separates a real tempo from a metric decoy: a grid
-/// at 2/3 or 4/5 of the true tempo can land on *something* every time — a
-/// hi-hat instead of a kick — and score a high mean, but the alternation
-/// between strong and weak hits shows up as spread. Measured against the
-/// synthetic grooves, a mean-only score picks the decoy for a busy breakbeat;
-/// at 1.0 every case separates with room to spare.
+/// At 1.0 the score reads as the level the weakest beats reach rather than the
+/// average. A grid at 2/3 of the true tempo lands on *something* every time — a
+/// hat instead of a kick — and that alternation shows up as spread.
 const CONSISTENCY_PENALTY: f32 = 1.0;
 
 /// Mean and spread of onset strength on the best-aligned beat grid at `bpm`.
 ///
-/// The envelope is zero-mean and unit-variance, so these read directly as
-/// standard deviations above background at beat times: a clean
-/// four-on-the-floor sits around 5, a wrong tempo near 0.
-///
-/// No tolerance window is applied around each beat. The target material is
-/// sequenced electronic music, which is metronomic to well under a frame; a
-/// tolerance window would only blur the discrimination that makes refinement
-/// work.
+/// The envelope is z-scored, so these read as standard deviations above
+/// background: a clean four-on-the-floor sits near 5, a wrong tempo near 0. No
+/// tolerance window — sequenced material is metronomic to under a frame, and a
+/// window would blur the discrimination refinement depends on.
 fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     let none = CombScore {
         score: 0.0,
@@ -156,14 +126,10 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     // quiet, not negative energy, so they clamp to zero for the recall sums.
     let total: f32 = env.iter().map(|v| v.max(0.0)).sum();
 
-    // Half-frame phase steps: finer than the envelope's own resolution, so the
-    // phase search never limits the score.
-    // Phase is chosen by mean alone: the best phase is the one where the grid
-    // sits on the most onset energy, which is the definition of beat alignment.
-    // The consistency penalty then judges *that* alignment. Folding the penalty
-    // into the phase search instead lets a candidate shop for a phase where its
-    // beats happen to be uniformly mediocre, which scores well and means
-    // nothing.
+    // Half-frame steps, so the phase search never limits the score. Phase is
+    // chosen by mean alone and the consistency penalty then judges that
+    // alignment; folding it in here lets a candidate shop for a phase where its
+    // beats are uniformly mediocre.
     let steps = (period * 2.0).ceil() as usize;
     let mut best = none;
     let mut best_mean = f32::MIN;
@@ -188,13 +154,9 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
         if mean > best_mean {
             best_mean = mean;
             let sd = (sum_sq / n - mean * mean).max(0.0).sqrt();
-            // How strong this grid's own beats are, and how evenly. On real
-            // music this is routinely negative — the spread between a strong
+            // Routinely negative on real music — the spread between a strong
             // downbeat and a weak one exceeds the level itself — which is why
-            // the miss penalty below is subtracted rather than multiplied in.
-            // A multiplicative form has to clamp the negative case away, and
-            // clamping collapses every candidate on a real track to the same
-            // zero and leaves the ranking to sort order.
+            // the miss penalty is subtracted rather than multiplied in.
             let precision = mean - CONSISTENCY_PENALTY * sd;
             let missed = 1.0 - recall(env, fps, period, phase, total);
             let score = precision - MISS_PENALTY * missed;
@@ -211,16 +173,9 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
 
 /// Share of the envelope's onset energy that falls on this grid.
 ///
-/// The other half of the trade that `precision` makes. Precision alone punishes
-/// a grid that is too *fast*, because half its points land on nothing. Nothing
-/// punished a grid that was too *slow*: a sparse grid is a subset of a dense
-/// one's structure, so sampling every third beat of a real groove posts a high
-/// mean and a tight spread precisely by skipping the beats that would have cost
-/// it. Recall charges for those skipped beats, and the product is an ordinary
-/// precision-recall balance.
-///
-/// Measured need: Sandstorm's preview reads 90.71 against a true 136.07 —
-/// exactly 2/3 — with the true tempo already on the shortlist and losing.
+/// Precision punishes a grid that is too fast but not one that is too slow:
+/// sampling every third beat of a groove posts a high mean and tight spread
+/// precisely by skipping the beats that would have cost it.
 fn recall(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
     if total <= 0.0 {
         return 0.0;
@@ -251,17 +206,10 @@ struct CombScore {
     /// Mean onset strength at this grid's beat positions, in standard
     /// deviations above background.
     ///
-    /// Confidence reads `mean` and `sd` rather than `score`, because recall is
-    /// structurally genre-dependent — a breakbeat with sixteenth hats genuinely
-    /// carries much of its onset energy off the beat grid, and letting that
-    /// drag its confidence down would have selecta discarding drum & bass for
-    /// being drum & bass. Recall decides *which* grid wins; it should not
-    /// decide how sure we are of the winner.
-    ///
-    /// They are carried separately rather than as `mean - sd`: that difference
-    /// is a sound way to *rank* grids on one track, where every candidate
-    /// shares an envelope, and a useless way to judge one grid against a fixed
-    /// threshold, where it is routinely negative on perfectly good readings.
+    /// Confidence reads `mean` and `sd` rather than `score`: recall is
+    /// genre-dependent, so it decides which grid wins but not how sure we are.
+    /// They stay separate because `mean - sd` is routinely negative, and so
+    /// useless against a fixed threshold.
     mean: f32,
     /// Spread of onset strength across those beats, same units.
     sd: f32,
@@ -270,9 +218,8 @@ struct CombScore {
 
 /// Locate the precise tempo near `coarse_bpm` using the unsmoothed envelope.
 ///
-/// Selection is already settled by this point; this only sharpens the number.
-/// Alignment is scored by mean alone — the consistency penalty is a tiebreaker
-/// between different tempi, not a better measure of where one tempo sits.
+/// Selection is settled by now, so this only sharpens the number and scores
+/// alignment by mean alone.
 fn precision_pass(env: &[f32], fps: f32, coarse_bpm: f32) -> f32 {
     let total_frames = env.len() as f32;
     if total_frames < 8.0 {
@@ -394,33 +341,26 @@ fn candidates(env: &OnsetEnvelope) -> (Vec<f32>, Vec<f32>) {
 
 /// True when `a` and `b` are related by a simple metric ratio.
 ///
-/// Used to decide what counts as a *competing* reading when scoring confidence:
-/// a candidate at half the chosen tempo is the same musical answer seen
-/// differently, while one at an unrelated tempo means the estimator genuinely
-/// could not tell.
+/// A candidate at half the chosen tempo is the same musical answer seen
+/// differently, so it is not a competing reading for confidence.
 fn metrically_related(a: f32, b: f32) -> bool {
     const RATIOS: [f32; 7] = [0.5, 2.0, 2.0 / 3.0, 3.0 / 2.0, 3.0 / 4.0, 4.0 / 3.0, 1.0];
     RATIOS.iter().any(|r| (a / b - r).abs() < 0.03 * r.max(1.0))
 }
 
-/// What failing to explain *all* the onset energy costs, in units of envelope
-/// standard deviation.
+/// What failing to explain all the onset energy costs, in envelope standard
+/// deviations.
 ///
-/// The envelope is z-scored, so this is directly comparable to the precision
-/// term: a grid that explains nothing gives up [`MISS_PENALTY`] sd of beat
-/// strength, and the 2/3 grid that skips a third of a groove gives up about a
-/// third of that. 3.0 puts a third of the energy at roughly one sd, which is
-/// the same order as the consistency penalty and so trades against it rather
-/// than swamping it.
+/// At 3.0 a grid skipping a third of a groove gives up about one sd, the same
+/// order as the consistency penalty, so the two trade rather than one swamping
+/// the other.
 const MISS_PENALTY: f32 = 3.0;
 
 /// Half-width of the window in which a beat counts as explaining an onset.
 ///
-/// Fixed in time, not as a fraction of the beat period. A fraction would hand a
-/// slow grid a proportionally wider window and let it claim the same onsets a
-/// fast grid has to hit precisely, which is the exact bias `recall` exists to
-/// remove. 30 ms is roughly the perceptual tolerance for "on the beat" and
-/// comfortably wider than the onset envelope's own smearing.
+/// Fixed in time, not a fraction of the period: a fraction would hand a slow
+/// grid a wider window, the exact bias `recall` exists to remove. 30 ms is
+/// about the perceptual tolerance for "on the beat".
 const EXPLAIN_HALF_WIDTH_SECS: f32 = 0.030;
 
 /// Estimate tempo from an onset strength envelope.
@@ -442,11 +382,9 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
     scored.truncate(MAX_FINALISTS);
 
-    // Rescore the finalists on the unsmoothed envelope. Smoothing is what makes
-    // the search tractable, but it also lifts a wrong grid that lands on quiet
-    // events towards the right grid that lands on loud ones — exactly the
-    // distinction that separates a real tempo from a 2/3 metric decoy. So the
-    // final comparison is made without it.
+    // Rescore the finalists unsmoothed. Smoothing makes the search tractable
+    // but lifts a wrong grid landing on quiet events toward the right one, so
+    // the final comparison goes without it.
     for c in scored.iter_mut() {
         c.bpm = precision_pass(&env.values, fps, c.bpm);
         let raw = comb_score(&env.values, fps, c.bpm);
@@ -462,11 +400,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     let best = scored[0];
 
     // The strongest reading that is not just the chosen tempo re-expressed.
-    // `None` when every other finalist is a metric restatement of the winner,
-    // which is the *most* confident case, not the least: nothing else on the
-    // shortlist is competing for a different answer. Defaulting to a score of
-    // zero instead would read as a rival that beat the winner, since comb
-    // scores on real music are routinely negative.
+    // `None` is the most confident case, not the least; a default of zero would
+    // read as a rival beating a winner whose own score is negative.
     let rival = scored[1..]
         .iter()
         .find(|c| !metrically_related(c.bpm, best.bpm))
@@ -503,10 +438,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
             break;
         }
         let bpm = round2(c.bpm);
-        // Several seeds routinely converge on the winner itself, and the
-        // refinement pass lands them a hundredth apart. Reporting one of those
-        // as a runner-up spends an alternate slot saying nothing and reads, in
-        // a diagnostic, as a rival reading at the tempo that already won.
+        // Several seeds converge on the winner itself. Reporting one as a
+        // runner-up reads as a rival at the tempo that already won.
         if (bpm - round2(best.bpm)).abs() < 0.5 {
             continue;
         }
@@ -546,51 +479,37 @@ const PERIODICITY_SATURATION: f32 = 0.5;
 
 /// Mean beat strength at which the grid is considered unambiguously strong.
 ///
-/// Measured on the winner's beat positions in standard deviations above
-/// background, where a clean four-on-the-floor reaches 5 and a wrong grid sits
-/// near 0. Half of clean is already past any real doubt that a beat is there.
+/// A clean four-on-the-floor reaches 5 sd above background; half of that is
+/// already past any real doubt that a beat is there.
 const CLARITY_SATURATION: f32 = 2.5;
 
 /// Score gap over the best unrelated reading at which the winner is considered
 /// clearly ahead.
 ///
-/// An absolute difference, not a ratio: comb scores are z-scored units that go
-/// negative on real music, so dividing by the winner inverts the meaning
-/// exactly where it matters. A full standard deviation is the same order as
-/// [`CONSISTENCY_PENALTY`], the discrimination the scorer itself makes, so a
-/// gap that size means the two readings were never really in contention.
+/// Absolute, not a ratio: comb scores go negative on real music, so dividing by
+/// the winner inverts the meaning. One sd matches [`CONSISTENCY_PENALTY`], the
+/// discrimination the scorer itself makes.
 const MARGIN_SATURATION: f32 = 1.0;
 
 /// Beats of audio at which the estimate is considered fully supported.
 ///
-/// 32 beats is about 15 seconds of house. A 30-second preview clears this
-/// comfortably; a short live-capture buffer might not, and should say so rather
-/// than reporting the same confidence as a full clip.
+/// 32 beats is about 15 seconds of house. A preview clears it; a short
+/// live-capture buffer might not, and should say so.
 const COVERAGE_SATURATION: f32 = 32.0;
 
-/// Fold five independent signals into a single 0-1 score.
+/// Fold five signals into a single 0-1 score.
 ///
-/// Multiplicative rather than averaged: each factor can veto on its own, which
-/// is the behaviour we want. A clip with no beat at all must not score well
-/// just because whatever it found was unrivalled.
-///
-/// Every factor is either scale-free or measured in the envelope's own z-scored
-/// units, so the same number means the same thing on a sparse house loop and on
-/// a dense breakbeat. An earlier version read the winner's `mean - sd`
-/// directly, which is neither: that quantity is negative on most real music,
-/// so it clamped to zero and reported no confidence in answers that were
-/// correct.
-///
-/// `gap` is the winner's score over the best unrelated reading, or `None` when
-/// there is no unrelated reading to beat.
+/// Multiplicative, so each factor can veto alone: a clip with no beat must not
+/// score well because whatever it found was unrivalled. Every factor is
+/// scale-free or in z-scored units, so one number means the same on a house
+/// loop and a breakbeat. `gap` is the winner's score over the best unrelated
+/// reading, `None` when there is none.
 fn confidence(mean: f32, sd: f32, gap: Option<f32>, periodicity: f32, observed_beats: f32) -> f32 {
     // How far above background this grid's beats sit on average.
     let clarity = (mean / CLARITY_SATURATION).clamp(0.0, 1.0);
-    // Whether they are alike. `mean / (mean + sd)` is 1 for beats of identical
-    // strength and 0.5 where the spread equals the level, with no dependence on
-    // how loud the track is. A grid landing on a kick, then a hat, then nothing
-    // scores a decent mean and fails here, which is the metric decoy it exists
-    // to catch.
+    // Whether they are alike, independent of how loud the track is. A grid
+    // landing on a kick, then a hat, then nothing posts a decent mean and
+    // fails here.
     let evenness = if mean > 0.0 {
         (mean / (mean + sd)).clamp(0.0, 1.0)
     } else {
@@ -818,11 +737,9 @@ mod tests {
 
     #[test]
     fn a_strong_but_uneven_grid_still_reports_confidence() {
-        // The shape every real track in the validation set has: beats plainly
-        // above background, but a spread wider than the level itself, because
-        // the clip contains a breakdown as well as a drop. `mean - sd` is
-        // negative here, which is what used to zero the confidence on answers
-        // that were correct.
+        // The shape every real track has: beats plainly above background, but
+        // a spread wider than the level, because the clip holds a breakdown as
+        // well as a drop.
         let (mean, sd) = (4.0, 5.0);
         assert!(mean - CONSISTENCY_PENALTY * sd < 0.0, "not the bug's shape");
         let c = confidence(mean, sd, Some(1.5), 0.6, 64.0);
@@ -844,9 +761,7 @@ mod tests {
     #[test]
     fn an_uncontested_winner_is_not_penalized_for_having_no_rival() {
         // Every finalist being a metric restatement of the winner is the most
-        // confident case there is. Scoring it as though a rival had tied would
-        // invert that, and did: the old default rival score of zero beat a
-        // winner whose own score was negative.
+        // confident case there is, not the least.
         let contested = confidence(4.0, 1.0, Some(0.1), 0.6, 64.0);
         let uncontested = confidence(4.0, 1.0, None, 0.6, 64.0);
         assert!(
@@ -885,12 +800,8 @@ mod repro_tests {
     use super::*;
     use crate::testsig::{self, Groove};
 
-    /// A grid that lands on every onset scores above one that lands on two
-    /// thirds of them, even when the sparse grid's own points are just as
-    /// strong. This is the Sandstorm failure in miniature: 2/3 of 136 has
-    /// period 1.5 beats, so it alternates between a kick and an offbeat stab
-    /// and its points look excellent — while a third of the pattern goes
-    /// unexplained.
+    /// A grid landing on every onset beats one landing on two thirds of them,
+    /// even when the sparse grid's own points are just as strong.
     #[test]
     fn a_sparse_grid_cannot_win_on_tidiness_alone() {
         let fps = 100.0;
@@ -914,10 +825,8 @@ mod repro_tests {
     }
 
     /// Real music does not give a grid whose mean exceeds its own spread, so
-    /// any form that clamps a negative precision away collapses every
-    /// candidate to the same value and hands the ranking to sort order. That
-    /// shipped once: a live run came back with almost every candidate scoring
-    /// 0.000, including the correct one.
+    /// clamping a negative precision collapses every candidate to the same
+    /// value and hands the ranking to sort order.
     #[test]
     fn scores_stay_ordered_on_an_envelope_with_uneven_beats() {
         let fps = 100.0;

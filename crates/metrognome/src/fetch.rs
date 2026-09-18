@@ -1,8 +1,7 @@
 //! HTTP fetching of preview clips.
 //!
-//! Previews are ~30 s of AAC, well under a megabyte, so they are read fully
-//! into memory. There is deliberately no disk path: the bytes exist only for
-//! the life of the analysis.
+//! Previews are well under a megabyte, so they are read fully into memory.
+//! There is deliberately no disk path.
 
 use std::time::Duration;
 

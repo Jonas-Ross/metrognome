@@ -63,17 +63,15 @@ enum Command {
     /// Analyze a set of well-known electronic tracks with documented tempos
     /// and report expected versus estimated.
     ///
-    /// Needs the network. The machine-readable report goes to stdout as usual;
-    /// the human-readable table goes to stderr, so stdout stays parseable.
+    /// Needs the network. The table goes to stderr so stdout stays parseable.
     Validate {
         #[command(flatten)]
         opts: CommonOpts,
     },
     /// Run the same accuracy check against synthesized audio. No network.
     ///
-    /// Covers the same tempo range as `validate`, with the octave and metric
-    /// traps each idiom actually has, so a regression in octave handling shows
-    /// up without touching Apple.
+    /// Same tempo range as `validate`, carrying the octave and metric traps
+    /// each idiom actually has.
     Selftest {
         /// Sample rate to synthesize at.
         #[arg(long, default_value_t = 44_100)]
@@ -128,12 +126,8 @@ impl CommonOpts {
     /// An analyzer that never reads or writes cached analyses.
     ///
     /// `validate` measures the algorithm, so a cached row measures nothing and
-    /// is indistinguishable from a real one in the output. That cost two live
-    /// runs: a DSP change shipped without bumping `ALGORITHM_VERSION`, the
-    /// cache answered every track, and the table came back byte-identical to
-    /// the run before it. Relying on the version bump alone leaves the same
-    /// trap armed for the next change; an accuracy check should not be able to
-    /// pass on stale data whatever anyone remembers to bump.
+    /// looks identical in the output. An accuracy check should not be able to
+    /// pass on stale data because someone forgot an `ALGORITHM_VERSION` bump.
     fn fresh_analyzer(&self) -> Result<Analyzer> {
         self.analyzer_with(self.fresh_config()?)
     }
@@ -403,12 +397,9 @@ async fn batch(concurrency: usize, opts: &CommonOpts) -> Result<()> {
                     let _permit = permits.acquire().await.expect("semaphore closed");
                     serde_json::to_value(analyzer.analyze(q).await).unwrap_or_else(error_value)
                 }
-                // A line that is not valid JSON still gets a result object, so
-                // the output has exactly one line per input line and a consumer
-                // reading them positionally never loses alignment. It is a full
-                // `Analysis` with an empty query, not a smaller ad-hoc object:
-                // a consumer deserializing every line as `Analysis` must not
-                // fail on precisely the row batch mode promises to report.
+                // One output line per input line, so positional readers stay
+                // aligned. A full `Analysis` rather than an ad-hoc object, so
+                // deserializing every line as `Analysis` cannot fail here.
                 Line::Malformed(message) => serde_json::to_value(Analysis::failed(
                     Query::default(),
                     None,
@@ -473,11 +464,8 @@ mod tests {
 
     #[test]
     fn validate_never_reads_a_cached_analysis() {
-        // `validate` measures the algorithm. A cached row measures nothing and
-        // looks identical in the table, which once made two live runs return
-        // byte-identical results after a real DSP change — the cache answered
-        // every track because ALGORITHM_VERSION had not been bumped. The
-        // guarantee lives here rather than in anyone's memory of that rule.
+        // The guarantee lives here rather than in anyone's memory of the
+        // ALGORITHM_VERSION rule, which has been forgotten once already.
         let o = opts(&[]);
         assert!(
             o.config().unwrap().cache_path.is_some(),

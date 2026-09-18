@@ -9,9 +9,7 @@ use crate::types::{Alternate, KeyEstimate, UNCERTAIN_AT_OR_BELOW};
 
 /// Pitch-class names, spelled the way the Camelot wheel spells them.
 ///
-/// Flats throughout for the black keys: a DJ tool that prints "D# minor" where
-/// every chart in the world says "Eb minor / 2A" is just making its user
-/// translate.
+/// Flats throughout for the black keys, matching how the charts spell them.
 const PITCH_NAMES: [&str; 12] = [
     "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
 ];
@@ -21,16 +19,14 @@ const PITCH_NAMES: [&str; 12] = [
 pub enum KeyProfile {
     /// Krumhansl-Schmuckler probe-tone profiles (1990).
     ///
-    /// Derived from listener experiments on Western classical music. Well
-    /// documented and the usual baseline; its known weakness is confusing a key
-    /// with its relative major or minor, which matters for electronic music
-    /// where a track may never state a leading tone.
+    /// The usual baseline, from listener experiments on Western classical
+    /// music. Known to confuse a key with its relative major or minor.
     Krumhansl,
     /// Profiles weighted for electronic dance music, after Shaath (2011).
     ///
-    /// Heavier tonic and dominant, which is what pulls a relative-key confusion
-    /// apart on material that leans on a repeated root. See DECISIONS.md for
-    /// the provenance caveat on these coefficients.
+    /// Heavier tonic and dominant, which pulls a relative-key confusion apart
+    /// on material leaning on a repeated root. See DECISIONS.md for the
+    /// provenance caveat on these coefficients.
     #[default]
     Edm,
 }
@@ -100,13 +96,10 @@ pub struct Chromagram {
 impl Chromagram {
     /// How far the chroma departs from flat, relative to its own level.
     ///
-    /// This is the one thing profile correlation cannot see. Pearson
-    /// correlation is invariant to scale and offset, so a chroma that is
-    /// essentially flat with a 2% ripple correlates with a key profile exactly
-    /// as well as one with unmistakable tonal peaks — which is how a click
-    /// track ends up reported as B minor. Measured on synthetic material:
-    /// sustained chords land near 1.0, drums alone near 0.2, white noise near
-    /// 0.005.
+    /// The one thing profile correlation cannot see: Pearson correlation is
+    /// scale- and offset-invariant, so a flat chroma with a 2% ripple fits a
+    /// key profile as well as one with real tonal peaks. Sustained chords
+    /// measure near 1.0, drums alone near 0.2, white noise near 0.005.
     pub fn salience(&self) -> f32 {
         let mean = self.bins.iter().sum::<f32>() / 12.0;
         if mean <= 1e-9 {
@@ -124,9 +117,8 @@ impl Chromagram {
 
 /// Build a chromagram from a chroma-sized magnitude spectrogram.
 ///
-/// Each frame is normalized to unit sum before accumulation, so a loud drop and
-/// a quiet breakdown get an equal vote. Key is a property of the whole clip,
-/// not of its loudest eight bars.
+/// Each frame is normalized to unit sum first, so a loud drop and a quiet
+/// breakdown get an equal vote.
 pub fn chromagram(spec: &Spectrogram) -> Chromagram {
     let mut out = Chromagram::default();
     if spec.frames == 0 {
@@ -147,12 +139,9 @@ pub fn chromagram(spec: &Spectrogram) -> Chromagram {
         })
         .collect();
 
-    // How many bins land on each pitch class. This is not uniform: a semitone
-    // spans one bin near A2 and dozens near A7, so summing raw magnitudes makes
-    // white noise produce a fixed, lopsided chroma that correlates strongly
-    // with some key. Averaging per pitch class instead makes noise flat, which
-    // is what lets a drums-only clip come back with no key rather than a
-    // confident wrong one.
+    // Not uniform: a semitone spans one bin near A2 and dozens near A7, so
+    // summing raw magnitudes would make white noise correlate strongly with
+    // some key. Averaging per class instead keeps noise flat.
     let mut bins_per_class = [0.0f32; 12];
     for pc in pitch_class.iter().flatten() {
         bins_per_class[*pc] += 1.0;
@@ -210,9 +199,8 @@ fn correlate(chroma: &[f32; 12], profile: &[f32; 12], tonic: usize) -> f32 {
 
 /// Correlation at which a key is considered clearly stated.
 ///
-/// Correlations are bounded by 1 but never approach it on real music, where the
-/// chroma carries percussion and inharmonic content too. 0.75 is about what a
-/// track with an unambiguous tonal centre reaches.
+/// Real music never approaches 1, since the chroma carries percussion too.
+/// 0.75 is about what an unambiguous tonal centre reaches.
 const KEY_CORRELATION_SATURATION: f32 = 0.75;
 
 /// Correlation gap at which the winner is considered clearly ahead.
@@ -229,9 +217,9 @@ const TONALITY_FLOOR: f32 = 0.15;
 
 /// Salience at which tonal content is no longer in doubt.
 ///
-/// Sustained chords measure around 1.0 and a full arrangement around 0.8. This
-/// sits well below both so that a real track carrying heavy percussion is not
-/// penalized for it, while a percussive clip cannot climb out.
+/// Sustained chords measure near 1.0 and a full arrangement near 0.8. Below
+/// both, so heavy percussion is not penalized but a drums-only clip cannot
+/// climb out.
 const TONALITY_SATURATION: f32 = 0.55;
 
 /// How `other` relates to the chosen key, for the alternates list.
@@ -400,11 +388,9 @@ mod tests {
 
     #[test]
     fn every_key_is_recovered_on_both_profile_sets() {
-        // The spot checks above cover eight of the twenty-four keys. A profile
-        // transcribed with a rotation error, or a chroma binning that is off by
-        // a constant, would pass those and fail elsewhere on the circle — and
-        // the live validation set has exactly one track with a documented key,
-        // so a systematic rotation is not something real music will reveal.
+        // A profile transcribed with a rotation error, or chroma binning off
+        // by a constant, passes the eight spot checks above and fails elsewhere
+        // on the circle. Too few tracks carry a documented key to catch it.
         let mut wrong = Vec::new();
         for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
             for pc in 0..12u8 {

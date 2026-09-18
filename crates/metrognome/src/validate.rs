@@ -1,14 +1,8 @@
 //! Accuracy checking against known answers.
 //!
-//! Two flavours, because they catch different things:
-//!
-//! - [`REFERENCE_TRACKS`] is a list of well-known electronic releases with
-//!   widely documented tempos, spanning house, techno and drum & bass. Running
-//!   it needs the network, and it is where octave handling on *real* recordings
-//!   shows up.
-//! - [`selftest`] does the same shape of check against synthesized audio, so
-//!   the octave and metric-decoy behaviour can be verified anywhere, including
-//!   on a CI box with no route to Apple.
+//! [`REFERENCE_TRACKS`] needs the network and is where octave handling on real
+//! recordings shows up; [`selftest`] runs the same shape of check against
+//! synthesized audio, so CI can catch a regression without reaching Apple.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,15 +30,10 @@ pub struct ReferenceTrack {
 
 /// Reference set spanning the three idioms the tempo fold is built around.
 ///
-/// Tempos are the commonly cited figures. Treat a 1-2 BPM disagreement as a
-/// disagreement between sources, not a bug; an octave or a metric ratio out is
-/// the thing this table exists to catch.
-///
-/// These figures are hand-entered and have been wrong at least once: Inner City
-/// Life sat here at 172 until a lookup put it at 155, which is what the
-/// estimator had been reporting. A row that disagrees is a question about which
-/// side is wrong, not proof that the estimator is. Entries marked unverified
-/// below have not been checked against a source outside this list.
+/// An octave or metric ratio out is what this table exists to catch; treat a
+/// 1-2 BPM disagreement as a disagreement between sources. Three of these
+/// figures have been wrong where the estimator was right, so a disagreement is
+/// a question about which side is wrong (DECISIONS.md, entries 27 and 32).
 pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     ReferenceTrack {
         artist: "Robin S",
@@ -130,11 +119,9 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
 
 /// What a validation run measured, split by how far each half can be trusted.
 ///
-/// Tempo and key are not equally validated and should not be totalled into one
-/// number. Tempo references agree across published sources and are checkable;
-/// key references do not and are not. The same run of ten tracks is a real
-/// accuracy measurement for tempo and a handful of anecdotes for key, so
-/// summing them produces a figure that means neither thing.
+/// Tempo and key are not equally validated, so they are never totalled: the
+/// same ten tracks are a real accuracy measurement for tempo and a handful of
+/// anecdotes for key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Summary {
     /// Rows measured.
@@ -160,10 +147,9 @@ impl Summary {
 
     /// What makes the run exit non-zero.
     ///
-    /// Tempo only. A key disagreement is reported and diagnosed but does not
-    /// fail the run: with published key data self-contradicting — the same
-    /// track listed in two different keys by the same source — a red build
-    /// would be measuring the reference, not the estimator.
+    /// Tempo only. Published key data contradicts itself, so a key
+    /// disagreement is reported and diagnosed but would fail a build on the
+    /// reference rather than the estimator.
     pub fn failures(&self) -> usize {
         self.total - self.tempo_ok
     }
@@ -224,18 +210,14 @@ pub struct MatchedTrack {
     /// Fraction of the preview below -60 dBFS. A high value means the clip is
     /// an intro, an outro or a breakdown rather than the body of the track.
     pub silent_fraction: f64,
-    /// Tempo alternates that were on offer, best first, as
-    /// `(bpm, relation, score)`. The score is what the grids were ranked on and
-    /// is comparable only within one track — without it a losing alternate
-    /// tells you the right answer was available but not how far off winning it
-    /// was, which is the difference between a near miss and a rout.
+    /// Tempo alternates on offer, best first, as `(bpm, relation, score)`. The
+    /// score is comparable only within one track, and separates a near miss
+    /// from a rout.
     #[serde(default)]
     pub tempo_alternates: Vec<(f64, String, f32)>,
-    /// Key alternates that were on offer, best first, as
-    /// `(label, relation, score)`. A wrong key is only actionable with the
-    /// runners-up beside it: the relative major, the dominant and a key
-    /// sharing no notes at all are three different failures, and the single
-    /// winning name in the table cannot distinguish them.
+    /// Key alternates on offer, best first, as `(label, relation, score)`.
+    /// Losing to the relative major, to the dominant, or to a key sharing no
+    /// notes are three different failures.
     #[serde(default)]
     pub key_alternates: Vec<(String, String, f32)>,
 }
@@ -275,9 +257,8 @@ pub enum Verdict {
 
 /// Tolerance for calling a tempo correct, in BPM.
 ///
-/// Wide enough to absorb disagreement between published sources and the fact
-/// that a 30-second preview may sit over a tempo-mapped section; narrow enough
-/// that a genuine mis-estimate cannot hide in it.
+/// Wide enough to absorb disagreement between sources, narrow enough that a
+/// genuine mis-estimate cannot hide in it.
 pub const BPM_TOLERANCE: f32 = 2.0;
 
 /// Classify an estimate against its expectation.
@@ -300,10 +281,8 @@ pub fn verdict(expected: f32, estimated: Option<f32>) -> Verdict {
 
 /// Compare an estimated key against an expected one.
 ///
-/// Spelling is normalized on both sides so that "Bb minor", "A# Minor" and
-/// "bb min" all agree: enharmonic spelling is a notation choice, not a
-/// different key, and the reference figures come from sources that pick
-/// either one.
+/// Spelling is normalized on both sides, so "Bb minor", "A# Minor" and "bb
+/// min" all agree.
 pub fn key_matches(expected: &str, estimated: &str) -> bool {
     let (Some((want_pc, want_minor)), Some((got_pc, got_minor))) =
         (parse_key(expected), parse_key(estimated))
@@ -325,8 +304,7 @@ pub fn key_matches(expected: &str, estimated: &str) -> bool {
 /// Parse a key name into a pitch class and, when stated, its mode.
 ///
 /// `Some((11, Some(true)))` is B minor, `Some((11, None))` is "B" with no mode
-/// given. Enharmonic spellings collapse: published sources pick either, and
-/// A# and Bb are the same key.
+/// given. Enharmonic spellings collapse.
 fn parse_key(s: &str) -> Option<(u8, Option<bool>)> {
     let lower = s.trim().to_lowercase();
     if lower.is_empty() {
@@ -443,11 +421,9 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
 
 /// Render the per-failure detail that the table has no room for.
 ///
-/// The table says a row is wrong. This says what it was wrong *about*: which
-/// recording the query actually resolved to, whether the preview had any music
-/// in it, and whether the expected tempo was among the alternates. Those three
-/// separate a resolution bug from a beatless clip from a genuine scoring miss,
-/// and the table alone cannot tell them apart.
+/// Which recording the query resolved to, whether the preview had music in it,
+/// and whether the expected tempo was among the alternates — separating a
+/// resolution bug from a beatless clip from a genuine scoring miss.
 pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
     let mut out = String::new();
     for r in rows.iter().filter(|r| !r.passed()) {

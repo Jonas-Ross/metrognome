@@ -1,9 +1,8 @@
 //! Shared spectral machinery: STFT, mel filterbank, onset envelope,
 //! autocorrelation.
 //!
-//! Nothing here knows about tempo or key. All window and hop sizes are derived
-//! from the sample rate in *seconds*, never hardcoded in samples, so the same
-//! code behaves identically on a 44.1 kHz preview and a 48 kHz capture tap.
+//! Nothing here knows about tempo or key. Window and hop sizes derive from the
+//! sample rate in seconds, never samples, so 44.1 and 48 kHz behave alike.
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -12,36 +11,30 @@ use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 
 /// Analysis window for onset detection.
 ///
-/// ~46 ms is the standard onset-detection compromise: long enough that a bass
-/// drum's fundamental resolves into its own mel band, short enough that two
-/// hits 60 ms apart stay separate events.
+/// ~46 ms: long enough that a kick's fundamental resolves into its own mel
+/// band, short enough that two hits 60 ms apart stay separate events.
 const ONSET_WINDOW_SECS: f32 = 0.046;
 
 /// Onset hop as a fraction of the window.
 ///
-/// 1/8 (87.5% overlap) rather than the more usual 1/4. The envelope frame rate
-/// *is* the resolution of the autocorrelation lag axis, and at 1/4 one lag bin
-/// near 174 BPM is worth about 6 BPM — too coarse to seed a tempo search.
+/// 1/8 rather than the usual 1/4: the envelope frame rate is the resolution of
+/// the autocorrelation lag axis, and at 1/4 one lag bin near 174 BPM is worth
+/// about 6 BPM.
 const ONSET_HOP_DIVISOR: usize = 8;
 
 /// Analysis window for chroma.
 ///
-/// Analysis window for chroma.
-///
-/// ~185 ms (8192 samples at 44.1 kHz), four times the onset window. Key
-/// detection trades time resolution for frequency resolution without regret:
-/// 5.4 Hz bins are what make adjacent semitones separable from A2 (110 Hz)
-/// upward, which is where [`CHROMA_FMIN`] comes from. At the onset window's
-/// 46 ms the bins are 21.5 Hz wide and a whole octave of the bass register
-/// collapses into one bin.
+/// ~185 ms, four times the onset window. Key detection trades time resolution
+/// for frequency: 5.4 Hz bins separate adjacent semitones from A2 up (hence
+/// [`CHROMA_FMIN`]), where the onset window's 21.5 Hz bins collapse a whole
+/// octave of the bass register into one.
 const CHROMA_WINDOW_SECS: f32 = 0.185;
 
 /// Lowest frequency admitted to the chromagram.
 ///
-/// A2. One semitone here is 6.5 Hz, just above the 5.4 Hz bin spacing, so this
-/// is the lowest pitch the transform can actually resolve. Below it, adjacent
-/// notes share bins and a sub-bass line would smear across pitch classes —
-/// worse than useless, because kick drum energy lives there too.
+/// A2, where one semitone is 6.5 Hz against 5.4 Hz bins — the lowest pitch the
+/// transform can resolve. Below it adjacent notes share bins and sub-bass
+/// smears across pitch classes, kick energy included.
 pub const CHROMA_FMIN: f32 = 110.0;
 
 /// Highest frequency admitted to the chromagram.
@@ -52,9 +45,8 @@ pub const CHROMA_FMAX: f32 = 3520.0;
 
 /// Number of mel bands in the onset filterbank.
 ///
-/// 64 bands is enough to keep a hi-hat and a kick in separate bands (so their
-/// fluxes add rather than mask) without making each band so narrow that
-/// vibrato registers as an onset.
+/// Enough to keep a hat and a kick in separate bands so their fluxes add,
+/// without bands so narrow that vibrato registers as an onset.
 const N_MELS: usize = 64;
 
 /// Low edge of the mel filterbank. Below this is rumble and DC offset.
@@ -68,16 +60,14 @@ const MEL_FMAX: f32 = 11_000.0;
 
 /// Log-compression constant for the mel magnitudes.
 ///
-/// `ln(1 + gamma*S)`: at gamma = 1000 a quiet hat and a loud kick contribute
-/// comparably to the flux, which is what we want — tempo is carried by event
-/// timing, not by event loudness.
+/// `ln(1 + gamma*S)`: at 1000 a quiet hat and a loud kick contribute
+/// comparably, since tempo is carried by event timing, not loudness.
 const LOG_COMPRESSION_GAMMA: f32 = 1000.0;
 
 /// Window, in seconds, of the moving average subtracted from the raw flux.
 ///
-/// This is a high-pass at ~0.67 Hz. It removes build-ups and filter sweeps
-/// (which otherwise dominate the autocorrelation at long lags) while sitting
-/// safely below the 1.5-3 Hz band where beats actually live.
+/// A high-pass at ~0.67 Hz: removes build-ups and filter sweeps that otherwise
+/// dominate the autocorrelation at long lags, well below the 1.5-3 Hz of beats.
 const FLUX_DETREND_SECS: f32 = 1.5;
 
 /// Smallest power of two at or above `n`.
@@ -161,9 +151,8 @@ impl Stft {
 
     /// Compute the magnitude spectrogram of `samples`.
     ///
-    /// Returns an empty spectrogram when the input is shorter than one window
-    /// rather than zero-padding: a single padded frame carries no useful
-    /// spectral information and would make callers guess whether it was real.
+    /// Empty rather than zero-padded when the input is shorter than one
+    /// window, so callers never have to guess whether a frame is real.
     pub fn magnitudes(&self, samples: &[f32], sample_rate: u32) -> Spectrogram {
         let bins = self.n_fft / 2 + 1;
         if samples.len() < self.n_fft {
@@ -256,11 +245,9 @@ pub struct OnsetEnvelope {
     pub values: Vec<f32>,
     /// Frame rate in Hz.
     pub fps: f32,
-    /// Seconds to add to a frame time to get back to the time of the event
-    /// that caused it. Flux at frame `t` compares two overlapping windows, so
-    /// it fires as soon as a transient enters the newer one — up to a whole
-    /// window before that transient is actually centred. Good to about
-    /// +/- 20 ms; exact latency depends on how loud the surrounding audio is.
+    /// Seconds to add to a frame time to reach the event that caused it. Flux
+    /// fires as a transient enters the newer window, up to a window before it
+    /// is centred. Good to about +/- 20 ms.
     pub latency_secs: f32,
     /// Ratio of the mean beat-band flux to its own standard deviation before
     /// normalization. Low values mean a smooth, beatless clip (an ambient
@@ -270,10 +257,8 @@ pub struct OnsetEnvelope {
 
 /// Compute the onset strength envelope from a magnitude spectrogram.
 ///
-/// Mel-band log-magnitude, half-wave-rectified first difference, summed across
-/// bands, then detrended. This is the standard spectral-flux recipe; the mel
-/// stage matters because it stops a single loud low-frequency band from
-/// swamping the contribution of the hats that actually carry a fast grid.
+/// The standard spectral-flux recipe. The mel stage stops one loud low band
+/// from swamping the hats that carry a fast grid.
 pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     if spec.frames < 2 {
         return OnsetEnvelope {
@@ -404,11 +389,9 @@ pub fn autocorrelation(x: &[f32], max_lag: usize) -> Vec<f32> {
 
 /// Convolve `x` with a normalized Hann kernel of `len` samples (forced odd).
 ///
-/// Used to widen onset spikes before tempo scoring. Without it the comb-filter
-/// score is a knife edge — an onset is one or two frames wide, so a 0.03% tempo
-/// error already walks the grid off the spikes — and no practical search step
-/// can find the peak. Smoothing trades a little precision for a searchable
-/// landscape, and also absorbs the timing jitter real recordings have.
+/// Widens onset spikes so the comb score is searchable: an onset is one or two
+/// frames wide, so without this a 0.03% tempo error already walks the grid off
+/// them. Also absorbs the timing jitter real recordings have.
 pub fn smooth(x: &[f32], len: usize) -> Vec<f32> {
     let len = len.max(1) | 1;
     if len == 1 || x.is_empty() {

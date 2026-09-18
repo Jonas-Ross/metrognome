@@ -1,9 +1,7 @@
 //! Synthetic signal generators.
 //!
-//! The DSP has to be testable with no network and no audio files in the repo,
-//! so every tempo and key test builds its own input here. These are also what
-//! the `selftest` CLI command runs, which makes a regression visible without
-//! touching the iTunes API.
+//! Every tempo and key test builds its own input here, so the DSP is testable
+//! with no network and no audio files in the repo. `selftest` runs these too.
 
 use std::f32::consts::TAU;
 
@@ -98,12 +96,10 @@ pub fn drum_hit(freq: f32, secs: f32, sample_rate: u32, amp: f32, decay: f32) ->
 
 /// A kick drum: broadband click, then a body whose pitch sweeps down to `freq`.
 ///
-/// The sweep is not decoration. A fixed-pitch sine at 55 Hz spells a clean
-/// harmonic series on A, which a key detector is right to notice — so a
-/// drums-only test signal built from fixed-pitch hits would appear to have a
-/// key, and the test asserting otherwise would be testing the wrong thing.
-/// Real kicks (a 909, an 808, an acoustic drum) all sweep, which is exactly why
-/// they read as percussion rather than as a bass note.
+/// The sweep is not decoration: a fixed-pitch 55 Hz sine spells a clean
+/// harmonic series on A, so a drums-only signal built from fixed-pitch hits
+/// would appear to have a key. Real kicks sweep, which is why they read as
+/// percussion rather than as a bass note.
 pub fn kick_hit(freq: f32, secs: f32, sample_rate: u32, amp: f32, noise: &mut Noise) -> Vec<f32> {
     let n = (secs * sample_rate as f32) as usize;
     let sr = sample_rate as f32;
@@ -157,12 +153,10 @@ pub enum Groove {
     /// and 4. The octave trap is the snare period, which reads as half tempo —
     /// this is exactly the 87-vs-174 drum & bass failure.
     Breakbeat,
-    /// Four-on-the-floor kick with an offbeat stab as loud as the kick, the
-    /// shape trance and a lot of festival techno actually have. The trap is a
-    /// grid at 2/3 of the true tempo: it has period 1.5 beats, so it lands
-    /// alternately on a kick and on an offbeat stab, hitting something strong
-    /// every time while explaining only two thirds of the pattern. Measured on
-    /// a real preview of Sandstorm, which read 90.71 against a true 136.
+    /// Four-on-the-floor with an offbeat stab as loud as the kick. The trap is
+    /// a grid at 2/3 of the true tempo: period 1.5 beats, so it alternates kick
+    /// and stab, hitting something strong every time while explaining two
+    /// thirds of the pattern.
     OffbeatTrance,
 }
 

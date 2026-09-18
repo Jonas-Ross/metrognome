@@ -41,9 +41,13 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 
 ## Engineering defaults
 
-- **Comments explain why, not what.** This matters most for DSP constants. A
-  window size, hop divisor, prior range, or fold window with no rationale next
-  to it is an unreviewable magic number — write the reason down.
+- **Comments explain why, not what, in one or two lines.** This matters most
+  for DSP constants: a window size, hop divisor, prior range, or fold window
+  with no rationale next to it is an unreviewable magic number. Write the
+  reason down, then stop. No paragraphs, no narrating what the code does, no
+  retelling the bug that prompted the change — that belongs in `DECISIONS.md`
+  and the commit message, and a comment repeating it goes stale where they
+  don't.
 - **Tests land with the code.** DSP is tested against synthetic signals from
   `testsig` (click tracks at known BPM, chord progressions in known keys) with
   explicit tolerances. Network resolution is tested against recorded fixture

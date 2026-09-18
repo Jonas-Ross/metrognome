@@ -1,10 +1,8 @@
 //! In-memory audio decoding to mono `f32` PCM.
 //!
-//! Preview clips are AAC in an MP4 container, but nothing downstream cares:
 //! `decode_bytes` sniffs the container and hands back [`Pcm`], which is all the
-//! DSP layer ever sees. Audio is never written to disk — the whole point of the
-//! preview pipeline is that we hold DRM-free bytes only for as long as it takes
-//! to analyze them.
+//! DSP layer ever sees. Audio is never written to disk: the bytes exist only as
+//! long as the analysis takes.
 
 use std::io::Cursor;
 
@@ -19,9 +17,8 @@ use crate::error::{Error, Result};
 
 /// Mono PCM at a known sample rate.
 ///
-/// Analysis entry points take this (or a bare `&[f32]` plus rate) so the same
-/// code serves preview clips today and a live capture tap later — nothing here
-/// knows or cares where the samples came from.
+/// Analysis entry points take this, or a bare `&[f32]` plus rate; nothing here
+/// knows where the samples came from.
 #[derive(Debug, Clone)]
 pub struct Pcm {
     /// Interleaving is not a concern: channels are already downmixed to mono.

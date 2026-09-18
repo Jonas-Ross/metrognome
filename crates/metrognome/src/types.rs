@@ -1,14 +1,9 @@
-//! The JSON contract with selecta.
+//! The JSON contract with selecta — interface, not implementation detail.
 //!
-//! These types are the interface, not an implementation detail. Two rules
-//! follow from that:
-//!
-//! - Every emitted object carries [`SCHEMA_VERSION`], so a consumer can refuse
-//!   a payload it does not understand instead of misreading it.
-//! - Every feature carries its own `source` and `confidence`, and flags itself
-//!   `uncertain` rather than presenting a guess as a fact. New features are
-//!   added as new optional fields on [`Features`]; existing fields keep their
-//!   meaning.
+//! Every emitted object carries [`SCHEMA_VERSION`] so a consumer can refuse
+//! what it does not understand, and every feature carries its own `source`,
+//! `confidence` and `uncertain` rather than presenting a guess as a fact. New
+//! features arrive as new optional fields; existing ones keep their meaning.
 
 use serde::{Deserialize, Serialize};
 
@@ -82,9 +77,8 @@ pub struct KeyEstimate {
 
 /// The store track a query resolved to.
 ///
-/// Always returned alongside the features, even when the match is poor, so a
-/// bad match is visible to the caller rather than something they have to infer
-/// from an implausible tempo.
+/// Returned even when the match is poor, so a bad match is visible rather than
+/// inferred from an implausible tempo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrackMatch {
     /// iTunes store track ID. Not a Music.app persistent ID.
@@ -116,9 +110,8 @@ pub struct TrackMatch {
 
 /// Audio-derived features.
 ///
-/// Deliberately a struct of options rather than a fixed pair: metrognome is
-/// meant to grow other measurements (energy, spectral balance, loudness), and
-/// each arrives as a new optional field without moving the existing ones.
+/// A struct of options rather than a fixed pair, so a new measurement arrives
+/// as a new optional field without moving the existing ones.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Features {
     /// Tempo, when it could be estimated.
@@ -160,9 +153,8 @@ pub struct Query {
     pub track_id: Option<i64>,
     /// Opaque string echoed back untouched.
     ///
-    /// selecta keys its library on Music.app persistent IDs, which mean nothing
-    /// to the store. This carries one through so a batch result can be matched
-    /// back to its row without relying on output ordering.
+    /// Carries selecta's Music.app persistent ID through, so a batch result
+    /// can be matched back to its row without relying on output ordering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_ref: Option<String>,
 }
