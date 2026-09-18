@@ -420,3 +420,27 @@ The selftest stays 10/10 with confidences unchanged. Whether this fixes
 Sandstorm is a question only the live run can answer, which is why the
 diagnostics now print each alternate's score: if the right tempo still loses,
 the next run says by how much instead of leaving it to be guessed at again.
+
+## 28. The miss penalty is subtracted, not multiplied
+
+Entry 27 shipped `precision * recall` with precision clamped at zero, on the
+reasoning that a grid whose spread exceeds its level "has nothing to say". That
+reasoning holds for synthetic audio and fails for real music, where the spread
+between a strong downbeat and a weak one routinely *does* exceed the level, so
+the clamp fired on nearly every candidate. The live run showed it plainly: the
+alternates came back at `score 0.000` almost across the board, including the
+correct answer. With every score equal, the ranking fell to sort order. Brown
+Paper Bag came right by luck and Born Slippy regressed from 140.09 to 93.24 the
+same way.
+
+The penalty is now subtracted in the envelope's own units:
+`mean - CONSISTENCY_PENALTY * sd - MISS_PENALTY * (1 - recall)`. Ordering is
+preserved across the whole real line, so a candidate that is merely poor still
+ranks above one that is worse, which is the entire job of a scoring function.
+
+The general lesson is in the test, not the constant: synthetic signals are
+cleaner than anything this will ever analyze, so a clamp or a floor that never
+triggers on a test fixture can still trigger on every real track.
+`scores_stay_ordered_on_an_envelope_with_uneven_beats` builds an envelope whose
+grid spread exceeds its mean and asserts the candidates stay distinct and
+correctly ordered. It fails against the clamped version.

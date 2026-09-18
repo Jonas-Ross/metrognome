@@ -187,12 +187,16 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
         if mean > best_mean {
             best_mean = mean;
             let sd = (sum_sq / n - mean * mean).max(0.0).sqrt();
-            // Precision: are this grid's own points on strong onsets, and
-            // consistently so? Clamped at zero because a grid whose spread
-            // exceeds its level has nothing to say, and a negative here would
-            // inverted-multiply with recall below.
-            let precision = (mean - CONSISTENCY_PENALTY * sd).max(0.0);
-            let score = precision * recall(env, fps, period, phase, total);
+            // How strong this grid's own beats are, and how evenly. On real
+            // music this is routinely negative — the spread between a strong
+            // downbeat and a weak one exceeds the level itself — which is why
+            // the miss penalty below is subtracted rather than multiplied in.
+            // A multiplicative form has to clamp the negative case away, and
+            // clamping collapses every candidate on a real track to the same
+            // zero and leaves the ranking to sort order.
+            let precision = mean - CONSISTENCY_PENALTY * sd;
+            let missed = 1.0 - recall(env, fps, period, phase, total);
+            let score = precision - MISS_PENALTY * missed;
             best = CombScore {
                 score,
                 precision,
@@ -383,6 +387,17 @@ fn metrically_related(a: f32, b: f32) -> bool {
     const RATIOS: [f32; 7] = [0.5, 2.0, 2.0 / 3.0, 3.0 / 2.0, 3.0 / 4.0, 4.0 / 3.0, 1.0];
     RATIOS.iter().any(|r| (a / b - r).abs() < 0.03 * r.max(1.0))
 }
+
+/// What failing to explain *all* the onset energy costs, in units of envelope
+/// standard deviation.
+///
+/// The envelope is z-scored, so this is directly comparable to the precision
+/// term: a grid that explains nothing gives up [`MISS_PENALTY`] sd of beat
+/// strength, and the 2/3 grid that skips a third of a groove gives up about a
+/// third of that. 3.0 puts a third of the energy at roughly one sd, which is
+/// the same order as the consistency penalty and so trades against it rather
+/// than swamping it.
+const MISS_PENALTY: f32 = 3.0;
 
 /// Half-width of the window in which a beat counts as explaining an onset.
 ///
@@ -774,6 +789,58 @@ mod repro_tests {
             "true {} vs 2/3 {}",
             truth.score,
             sparse.score
+        );
+    }
+
+    /// Real music does not give a grid whose mean exceeds its own spread, so
+    /// any form that clamps a negative precision away collapses every
+    /// candidate to the same value and hands the ranking to sort order. That
+    /// shipped once: a live run came back with almost every candidate scoring
+    /// 0.000, including the correct one.
+    #[test]
+    fn scores_stay_ordered_on_an_envelope_with_uneven_beats() {
+        let fps = 100.0;
+        let bpm = 136.0;
+        let period = 60.0 * fps / bpm;
+        let mut env = vec![0.0f32; 3000];
+        // Alternating strong and weak beats plus offbeats, so the spread across
+        // the grid comfortably exceeds its mean — the real-music case.
+        let mut k = 0;
+        let mut t = 0.0;
+        while (t as usize) < env.len() {
+            env[t as usize] = if k % 4 == 0 { 6.0 } else { 0.5 };
+            t += period / 2.0;
+            k += 1;
+        }
+        // Everything else sits below average, as a z-scored envelope does.
+        for v in env.iter_mut() {
+            *v -= 0.4;
+        }
+
+        let truth = comb_score(&env, fps, bpm);
+        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0);
+        let unrelated = comb_score(&env, fps, 103.0);
+        assert!(
+            truth.score > sparse.score,
+            "true {} vs 2/3 {}",
+            truth.score,
+            sparse.score
+        );
+        assert!(
+            truth.score > unrelated.score,
+            "true {} vs unrelated {}",
+            truth.score,
+            unrelated.score
+        );
+        // The distinctions must survive as real numbers, not collapse to a
+        // shared floor.
+        assert!(
+            (truth.score - sparse.score).abs() > 1e-6
+                && (sparse.score - unrelated.score).abs() > 1e-6,
+            "scores collapsed: {} {} {}",
+            truth.score,
+            sparse.score,
+            unrelated.score
         );
     }
 
