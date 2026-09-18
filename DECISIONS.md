@@ -186,3 +186,39 @@ default.
 Flats for every black key: "Eb minor / 2A", never "D# minor". The consumer is a
 DJ-adjacent tool and every harmonic mixing chart in the world uses these
 spellings; printing the enharmonic equivalent just makes the reader translate.
+
+## 16. Resolution is cached as well as analysis
+
+The brief asks for results to be cached by resolved store track ID, and they
+are. But resolution is the rate-limited step: at 18 requests a minute, a second
+pass over a ten-thousand-track library against a *fully populated* result cache
+would still spend nine hours asking the search API to repeat itself. So a second
+table maps a normalized `artist\u{1}title` (or `id:N`) to the match it resolved
+to, and a cached resolution short-circuits the request.
+
+The two caches are independent: a cached resolution does not imply a cached
+analysis, which is what makes an algorithm-version bump re-analyze without also
+re-resolving.
+
+## 17. Cache keys include the analysis options
+
+A row is a hit only when the track ID, the algorithm version *and* the analysis
+options all match. Key detection depends on which profile set is selected, so
+`--key-profile krumhansl` must not be served an answer computed under the EDM
+profiles. Anything added later that changes the output has to appear in
+`AnalysisOptions::cache_key` or it will silently serve the wrong thing.
+
+A row whose payload no longer deserializes is treated as a miss rather than an
+error. Re-analyzing costs one request; erroring would wedge the consumer until
+someone deleted the file by hand.
+
+## 18. Batch output is one line per input line, in input order
+
+Work runs concurrently, bounded by a semaphore, but results are awaited in order
+so output order matches input order. A line that is not valid JSON still
+produces a result object, so a consumer reading positionally never loses
+alignment.
+
+`client_ref` exists for the consumers that would rather not rely on position at
+all: selecta keys its library on Music.app persistent IDs, which mean nothing to
+the store, and this carries one through untouched.

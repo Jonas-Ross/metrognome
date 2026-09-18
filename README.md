@@ -23,7 +23,8 @@ metrognome probe --url https://.../preview.m4a
   crash — one bad row never kills the run.
 - **stdout carries nothing but JSON.** Logs go to stderr, always.
 - Results are cached on disk by resolved iTunes store track ID, so a track is
-  analyzed once.
+  analyzed once. Resolutions are cached too — that is the rate-limited step.
+  `--cache-path` moves the database, `--no-cache` bypasses it.
 
 ## Output
 

@@ -370,7 +370,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         .map(|c| c.score)
         .unwrap_or(0.0);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
-    let confidence = confidence(best.score, rival, periodicity);
+    let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
+    let confidence = confidence(best.score, rival, periodicity, observed_beats);
 
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
@@ -417,12 +418,19 @@ const PERIODICITY_SATURATION: f32 = 0.5;
 /// Clean grooves measure 3-6; there is no useful information past this.
 const CLARITY_SATURATION: f32 = 2.5;
 
+/// Beats of audio at which the estimate is considered fully supported.
+///
+/// 32 beats is about 15 seconds of house. A 30-second preview clears this
+/// comfortably; a short live-capture buffer might not, and should say so rather
+/// than reporting the same confidence as a full clip.
+const COVERAGE_SATURATION: f32 = 32.0;
+
 /// Fold three independent signals into a single 0-1 score.
 ///
 /// Multiplicative rather than averaged: each factor can veto on its own, which
 /// is the behaviour we want. A clip with no beat at all must not score well
 /// just because whatever it found was unrivalled.
-fn confidence(best: f32, rival: f32, periodicity: f32) -> f32 {
+fn confidence(best: f32, rival: f32, periodicity: f32, observed_beats: f32) -> f32 {
     // How far above background the weakest beats in the grid sit.
     let clarity = (best / CLARITY_SATURATION).clamp(0.0, 1.0);
     // How much better the winner is than the best unrelated reading.
@@ -435,10 +443,12 @@ fn confidence(best: f32, rival: f32, periodicity: f32) -> f32 {
     // collapses on a beatless intro, where the flux is noise and the comb score
     // can still find a lucky alignment.
     let periodic = (periodicity / PERIODICITY_SATURATION).clamp(0.0, 1.0);
+    // How much audio the estimate is standing on.
+    let coverage = (observed_beats / COVERAGE_SATURATION).clamp(0.0, 1.0);
 
     // Exponents weight clarity hardest: it is the only factor that is low for
     // both of the two real failure modes (no beat, and a beat we missed).
-    clarity.powf(0.5) * margin.powf(0.25) * periodic.powf(0.25)
+    clarity.powf(0.5) * margin.powf(0.25) * periodic.powf(0.25) * coverage.powf(0.25)
 }
 
 fn round2(v: f32) -> f32 {
@@ -578,6 +588,19 @@ mod tests {
                 "a pure tone must not read as a confident tempo: {est:?}"
             ),
         }
+    }
+
+    #[test]
+    fn a_short_clip_is_less_confident_than_a_long_one() {
+        let long = tempo_of(&testsig::click_track(128.0, 30.0, SR));
+        let short = tempo_of(&testsig::click_track(128.0, 6.0, SR));
+        assert!((short.bpm - 128.0).abs() < 1.0, "got {}", short.bpm);
+        assert!(
+            short.confidence < long.confidence,
+            "short {} vs long {}",
+            short.confidence,
+            long.confidence
+        );
     }
 
     #[test]

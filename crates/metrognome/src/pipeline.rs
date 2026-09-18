@@ -5,6 +5,10 @@
 //! what lets a future live-capture path reuse it unchanged. [`Analyzer`] is the
 //! preview-specific orchestration layered on top.
 
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use crate::cache::{Cache, CachedAnalysis};
 use crate::decode::decode_bytes;
 use crate::dsp::{onset_envelope, Stft};
 use crate::error::{Error, Result};
@@ -20,6 +24,15 @@ use crate::types::{Analysis, AudioInfo, Features, Query, TrackMatch};
 pub struct AnalysisOptions {
     /// Which key profile set to correlate against.
     pub key_profile: KeyProfile,
+}
+
+impl AnalysisOptions {
+    /// A stable string identifying these options, used as part of the cache
+    /// key. Anything that changes the output must appear here, or a cache hit
+    /// will serve an answer produced under different settings.
+    pub fn cache_key(&self) -> String {
+        format!("key_profile={:?}", self.key_profile).to_ascii_lowercase()
+    }
 }
 
 /// Estimate every supported feature from raw mono PCM, with default options.
@@ -59,6 +72,8 @@ pub struct AnalyzerConfig {
     pub burst: f64,
     /// DSP options passed down to [`analyze_pcm_with`].
     pub analysis: AnalysisOptions,
+    /// Where to keep the result cache. `None` disables caching entirely.
+    pub cache_path: Option<PathBuf>,
 }
 
 impl Default for AnalyzerConfig {
@@ -67,6 +82,7 @@ impl Default for AnalyzerConfig {
             requests_per_minute: DEFAULT_PER_MINUTE,
             burst: DEFAULT_BURST,
             analysis: AnalysisOptions::default(),
+            cache_path: crate::cache::default_path().ok(),
         }
     }
 }
@@ -76,6 +92,9 @@ pub struct Analyzer {
     client: reqwest::Client,
     resolver: Resolver,
     analysis: AnalysisOptions,
+    // SQLite calls here are microseconds and never span an await, so a plain
+    // mutex is the right tool; an async one would only add ceremony.
+    cache: Option<Mutex<Cache>>,
 }
 
 impl Analyzer {
@@ -86,10 +105,15 @@ impl Analyzer {
             client.clone(),
             RateLimiter::new(config.requests_per_minute, config.burst),
         );
+        let cache = match &config.cache_path {
+            Some(path) => Some(Mutex::new(Cache::open(path)?)),
+            None => None,
+        };
         Ok(Analyzer {
             client,
             resolver,
             analysis: config.analysis,
+            cache,
         })
     }
 
@@ -109,23 +133,97 @@ impl Analyzer {
             Ok(t) => t,
             Err(e) => return Analysis::failed(query, None, &e),
         };
+
+        let options_key = self.analysis.cache_key();
+        if let Some(hit) = self.cached(track.track_id, &options_key) {
+            let mut out = Analysis::ok(query, Some(hit.track), hit.features, hit.audio);
+            out.cached = true;
+            return out;
+        }
+
         match self.analyze_resolved(&track).await {
-            Ok((features, audio)) => Analysis::ok(query, Some(track), features, audio),
+            Ok((features, audio)) => {
+                self.store(
+                    track.track_id,
+                    &options_key,
+                    &CachedAnalysis {
+                        track: track.clone(),
+                        features: features.clone(),
+                        audio: audio.clone(),
+                    },
+                );
+                Analysis::ok(query, Some(track), features, audio)
+            }
             Err(e) => Analysis::failed(query, Some(track), &e),
         }
     }
 
-    async fn resolve(&self, query: &Query) -> Result<TrackMatch> {
+    /// Key under which a query's *resolution* is cached.
+    ///
+    /// Normalized so that casing and spacing differences between a library's
+    /// metadata and a previous run do not miss.
+    fn resolution_key(query: &Query) -> Option<String> {
         if let Some(id) = query.track_id {
-            return self.resolver.lookup(id).await;
+            return Some(format!("id:{id}"));
         }
-        match (query.artist.as_deref(), query.title.as_deref()) {
-            (Some(artist), Some(title)) if !title.trim().is_empty() => {
-                self.resolver.search(artist, title).await
+        let artist = query.artist.as_deref()?.trim().to_lowercase();
+        let title = query.title.as_deref()?.trim().to_lowercase();
+        if title.is_empty() {
+            return None;
+        }
+        // Unit separator: cannot appear in metadata, so "a b"+"c" and "a"+"b c"
+        // cannot collide.
+        Some(format!("q:{artist}\u{1}{title}"))
+    }
+
+    async fn resolve(&self, query: &Query) -> Result<TrackMatch> {
+        let key = Self::resolution_key(query);
+        if let Some(key) = &key {
+            if let Some(cache) = &self.cache {
+                if let Ok(guard) = cache.lock() {
+                    if let Ok(Some(hit)) = guard.get_resolution(key) {
+                        return Ok(hit);
+                    }
+                }
             }
-            _ => Err(Error::InvalidInput(
-                "need either track_id, or both artist and title".into(),
-            )),
+        }
+
+        let resolved = if let Some(id) = query.track_id {
+            self.resolver.lookup(id).await
+        } else {
+            match (query.artist.as_deref(), query.title.as_deref()) {
+                (Some(artist), Some(title)) if !title.trim().is_empty() => {
+                    self.resolver.search(artist, title).await
+                }
+                _ => Err(Error::InvalidInput(
+                    "need either track_id, or both artist and title".into(),
+                )),
+            }
+        }?;
+
+        if let (Some(key), Some(cache)) = (&key, &self.cache) {
+            if let Ok(guard) = cache.lock() {
+                // A cache write failure is not worth failing an analysis over;
+                // the cost is one repeated request next time.
+                if let Err(e) = guard.put_resolution(key, &resolved) {
+                    tracing::warn!(error = %e, "could not cache resolution");
+                }
+            }
+        }
+        Ok(resolved)
+    }
+
+    fn cached(&self, track_id: i64, options_key: &str) -> Option<CachedAnalysis> {
+        let cache = self.cache.as_ref()?;
+        let guard = cache.lock().ok()?;
+        guard.get(track_id, options_key).ok().flatten()
+    }
+
+    fn store(&self, track_id: i64, options_key: &str, value: &CachedAnalysis) {
+        let Some(cache) = &self.cache else { return };
+        let Ok(guard) = cache.lock() else { return };
+        if let Err(e) = guard.put(track_id, options_key, value) {
+            tracing::warn!(error = %e, "could not cache analysis");
         }
     }
 
@@ -208,9 +306,49 @@ mod tests {
         }
     }
 
+    fn test_config() -> AnalyzerConfig {
+        AnalyzerConfig {
+            cache_path: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_cache_key_changes_with_anything_that_changes_the_output() {
+        let a = AnalysisOptions {
+            key_profile: KeyProfile::Edm,
+        };
+        let b = AnalysisOptions {
+            key_profile: KeyProfile::Krumhansl,
+        };
+        assert_ne!(a.cache_key(), b.cache_key());
+    }
+
+    #[test]
+    fn resolution_keys_normalize_case_and_spacing() {
+        let a = Query {
+            artist: Some("Daft Punk".into()),
+            title: Some("Around the World".into()),
+            ..Default::default()
+        };
+        let b = Query {
+            artist: Some("  daft punk ".into()),
+            title: Some("AROUND THE WORLD  ".into()),
+            ..Default::default()
+        };
+        assert_eq!(Analyzer::resolution_key(&a), Analyzer::resolution_key(&b));
+        // An ID is its own key and never collides with a text query.
+        let c = Query {
+            track_id: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(Analyzer::resolution_key(&c).unwrap(), "id:5");
+        assert!(Analyzer::resolution_key(&Query::default()).is_none());
+    }
+
     #[tokio::test]
     async fn a_query_with_neither_id_nor_title_is_an_input_error() {
-        let a = Analyzer::new(&AnalyzerConfig::default()).unwrap();
+        let a = Analyzer::new(&test_config()).unwrap();
         let out = a.analyze(Query::default()).await;
         assert_eq!(out.status, "error");
         assert_eq!(out.error.unwrap().kind, "invalid_input");
@@ -218,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolved_track_without_a_preview_fails_cleanly() {
-        let a = Analyzer::new(&AnalyzerConfig::default()).unwrap();
+        let a = Analyzer::new(&test_config()).unwrap();
         let track = TrackMatch {
             track_id: 42,
             artist: "x".into(),

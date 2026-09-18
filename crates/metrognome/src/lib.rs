@@ -17,6 +17,7 @@
 
 #![warn(missing_docs)]
 
+pub mod cache;
 pub mod decode;
 pub mod dsp;
 pub mod error;

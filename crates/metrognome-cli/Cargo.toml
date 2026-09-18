@@ -10,6 +10,11 @@ repository.workspace = true
 name = "metrognome"
 path = "src/main.rs"
 
+[dev-dependencies]
+metrognome = { path = "../metrognome" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
 [dependencies]
 metrognome = { path = "../metrognome" }
 anyhow = { workspace = true }
