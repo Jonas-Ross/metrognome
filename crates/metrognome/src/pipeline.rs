@@ -136,7 +136,13 @@ impl Analyzer {
 
         let options_key = self.analysis.cache_key();
         if let Some(hit) = self.cached(track.track_id, &options_key) {
-            let mut out = Analysis::ok(query, Some(hit.track), hit.features, hit.audio);
+            // Features and audio come from the cache; the track does not. The
+            // analysis cache is keyed by store track ID, so two different
+            // queries share a row, but `match_score` and `uncertain` describe
+            // how well *this* query matched. Returning the cached row's match
+            // metadata would report a weak fuzzy query with an earlier exact
+            // query's score, and a consumer would trust a bad match.
+            let mut out = Analysis::ok(query, Some(track), hit.features, hit.audio);
             out.cached = true;
             return out;
         }
@@ -163,6 +169,8 @@ impl Analyzer {
     /// Normalized so that casing and spacing differences between a library's
     /// metadata and a previous run do not miss.
     fn resolution_key(query: &Query) -> Option<String> {
+        // A track ID identifies rather than describes, so matching never comes
+        // into it and the key needs no matcher version.
         if let Some(id) = query.track_id {
             return Some(format!("id:{id}"));
         }
@@ -173,7 +181,8 @@ impl Analyzer {
         }
         // Unit separator: cannot appear in metadata, so "a b"+"c" and "a"+"b c"
         // cannot collide.
-        Some(format!("q:{artist}\u{1}{title}"))
+        let v = crate::resolve::MATCHER_VERSION;
+        Some(format!("q{v}:{artist}\u{1}{title}"))
     }
 
     async fn resolve(&self, query: &Query) -> Result<TrackMatch> {
