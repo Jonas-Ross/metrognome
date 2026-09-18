@@ -266,6 +266,27 @@ async fn main() -> Result<()> {
                                     .collect()
                             })
                             .unwrap_or_default(),
+                        key_alternates: result
+                            .features
+                            .key
+                            .as_ref()
+                            .map(|k| {
+                                k.alternates
+                                    .iter()
+                                    .map(|a| {
+                                        (
+                                            // The label carries the key name;
+                                            // the value is only its Camelot
+                                            // number, which reads as a bare
+                                            // integer in a report.
+                                            a.label.clone().unwrap_or_else(|| a.value.to_string()),
+                                            a.relation.clone(),
+                                            a.score,
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                     });
                 }
                 rows.push(row);

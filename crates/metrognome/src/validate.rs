@@ -189,6 +189,13 @@ pub struct MatchedTrack {
     /// was, which is the difference between a near miss and a rout.
     #[serde(default)]
     pub tempo_alternates: Vec<(f64, String, f32)>,
+    /// Key alternates that were on offer, best first, as
+    /// `(label, relation, score)`. A wrong key is only actionable with the
+    /// runners-up beside it: the relative major, the dominant and a key
+    /// sharing no notes at all are three different failures, and the single
+    /// winning name in the table cannot distinguish them.
+    #[serde(default)]
+    pub key_alternates: Vec<(String, String, f32)>,
 }
 
 impl ValidationRow {
@@ -432,6 +439,23 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
                 if near { "AMONG" } else { "not among" }
             ));
         }
+        if !m.key_alternates.is_empty() {
+            let alts: Vec<String> = m
+                .key_alternates
+                .iter()
+                .map(|(label, rel, score)| format!("{label} {rel} score {score:.3}"))
+                .collect();
+            // The relation matters more than the score here. A run of
+            // `relative_minor` and `dominant` runners-up separated by
+            // hundredths is the chromagram working and the tiebreak failing;
+            // an unrelated key winning outright is the chromagram failing.
+            out.push_str(&format!(
+                "    key: {} conf {:.2}, runners-up: {}\n",
+                r.estimated_key.as_deref().unwrap_or("none"),
+                r.key_confidence.unwrap_or(0.0),
+                alts.join(", ")
+            ));
+        }
     }
     out
 }
@@ -577,6 +601,7 @@ mod tests {
             preview_secs: 30.0,
             silent_fraction: 0.4,
             tempo_alternates: vec![(155.0, "double".into(), 0.9), (77.5, "half".into(), 0.4)],
+            key_alternates: vec![("G major (9B)".into(), "relative_major".into(), 0.71)],
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("Inner City Life (Radio Edit)"), "{d}");
@@ -595,10 +620,39 @@ mod tests {
             preview_secs: 30.0,
             silent_fraction: 0.01,
             tempo_alternates: vec![(174.0, "double".into(), 0.9)],
+            key_alternates: Vec::new(),
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("AMONG the alternates"), "{d}");
         assert!(!d.contains("UNCERTAIN"), "{d}");
+        // No key alternates, no key line: a tempo failure on a track carrying
+        // no key expectation should not grow a row of zeroes.
+        assert!(!d.contains("runners-up"), "{d}");
+    }
+
+    #[test]
+    fn diagnostics_name_the_runner_up_key_and_how_it_relates() {
+        let mut r = row("x", "trance", 136.0, "B", &Features::default());
+        r.estimated_key = Some("E minor".into());
+        r.key_confidence = Some(1.0);
+        r.matched = Some(MatchedTrack {
+            artist: "Darude".into(),
+            title: "Sandstorm".into(),
+            match_score: 1.0,
+            uncertain: false,
+            preview_secs: 30.0,
+            silent_fraction: 0.03,
+            tempo_alternates: Vec::new(),
+            key_alternates: vec![
+                ("B minor (10A)".into(), "dominant".into(), 0.612),
+                ("G major (9B)".into(), "relative_major".into(), 0.604),
+            ],
+        });
+        let d = render_diagnostics(&[r]);
+        // The whole point: a confident wrong answer whose runner-up is a
+        // hundredth behind is a different bug from one that wins by a mile.
+        assert!(d.contains("key: E minor conf 1.00"), "{d}");
+        assert!(d.contains("B minor (10A) dominant score 0.612"), "{d}");
     }
 
     #[test]
