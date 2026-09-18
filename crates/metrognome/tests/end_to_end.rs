@@ -67,10 +67,25 @@ async fn serve() -> SocketAddr {
     addr
 }
 
+/// An analyzer config with no cache.
+///
+/// `AnalyzerConfig::default()` points at the real user cache, which is wrong
+/// for a test twice over: it writes to whatever machine runs the suite, and it
+/// reads back resolutions from earlier runs whose preview URLs point at the
+/// random port that run's stand-in server used and no longer listens on. A
+/// cached row also means the test passes without exercising the fetch and
+/// decode path it exists to cover.
+fn uncached() -> AnalyzerConfig {
+    AnalyzerConfig {
+        cache_path: None,
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn analyze_resolves_fetches_decodes_and_estimates_tempo() {
     let addr = serve().await;
-    let analyzer = Analyzer::new(&AnalyzerConfig::default())
+    let analyzer = Analyzer::new(&uncached())
         .expect("analyzer")
         .with_base_url(format!("http://{addr}"));
 
@@ -110,7 +125,7 @@ async fn analyze_resolves_fetches_decodes_and_estimates_tempo() {
 #[tokio::test]
 async fn a_track_id_takes_the_lookup_path() {
     let addr = serve().await;
-    let analyzer = Analyzer::new(&AnalyzerConfig::default())
+    let analyzer = Analyzer::new(&uncached())
         .expect("analyzer")
         .with_base_url(format!("http://{addr}"));
 
@@ -129,7 +144,7 @@ async fn a_track_id_takes_the_lookup_path() {
 #[tokio::test]
 async fn a_lookup_that_returns_nothing_useful_is_a_reportable_failure() {
     let addr = serve().await;
-    let analyzer = Analyzer::new(&AnalyzerConfig::default())
+    let analyzer = Analyzer::new(&uncached())
         .expect("analyzer")
         .with_base_url(format!("http://{addr}"));
 
