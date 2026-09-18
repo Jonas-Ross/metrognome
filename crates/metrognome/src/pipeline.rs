@@ -271,7 +271,9 @@ impl Analyzer {
             ))
         })
         .await
-        .map_err(|e| Error::Decode(format!("analysis task failed: {e}")))?
+        // A panicked task is a metrognome bug, not bad audio. Reporting it as
+        // `decode` would have a consumer blacklist the track for our fault.
+        .map_err(|e| Error::Internal(format!("analysis task failed: {e}")))?
     }
 }
 
