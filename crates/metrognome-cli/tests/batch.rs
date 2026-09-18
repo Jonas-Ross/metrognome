@@ -246,3 +246,58 @@ async fn a_cache_hit_reports_this_query_s_match_not_the_one_that_filled_it() {
 
     let _ = std::fs::remove_file(&cache);
 }
+
+/// selecta's intended use is a long-lived subprocess over a pipe, which only
+/// works if a result comes back while stdin is still open.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_emits_a_result_while_stdin_is_still_open() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let sr = 44_100;
+    let preview = metrognome::testsig::wav_bytes(
+        &metrognome::testsig::groove(130.0, 20.0, sr, metrognome::testsig::Groove::FourOnFloor),
+        sr,
+        1,
+    );
+    let addr = serve(preview).await;
+    let cache = std::env::temp_dir().join(format!("mg-stream-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&cache);
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_metrognome"))
+        .args([
+            "batch",
+            "--concurrency",
+            "2",
+            "--api-base-url",
+            &format!("http://{addr}"),
+            "--cache-path",
+            cache.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn metrognome");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut out = BufReader::new(child.stdout.take().expect("stdout")).lines();
+
+    stdin
+        .write_all(b"{\"artist\":\"Test Act\",\"title\":\"Test Track\"}\n")
+        .await
+        .expect("write");
+    stdin.flush().await.expect("flush");
+
+    let line = tokio::time::timeout(std::time::Duration::from_secs(20), out.next_line())
+        .await
+        .expect("timed out waiting for a result with stdin still open")
+        .expect("read stdout")
+        .expect("a line");
+    serde_json::from_str::<metrognome::Analysis>(&line)
+        .unwrap_or_else(|e| panic!("line is not an Analysis: {line} ({e})"));
+
+    // Only now close stdin, proving the result did not depend on it.
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_file(&cache);
+}

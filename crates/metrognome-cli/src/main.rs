@@ -4,6 +4,7 @@
 //! nothing but JSON**. Logs, progress, and diagnostics go to stderr. Breaking
 //! that is breaking the interface.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -378,20 +379,45 @@ async fn batch(concurrency: usize, opts: &CommonOpts) -> Result<()> {
     let analyzer = Arc::new(opts.analyzer()?);
     let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut pending: Vec<tokio::task::JoinHandle<serde_json::Value>> = Vec::new();
-
-    while let Some(raw) = lines.next_line().await.context("reading stdin")? {
-        if raw.trim().is_empty() {
-            continue;
+    // Reading runs in its own task feeding a bounded channel, so the main loop
+    // can wait on "next line" and "oldest result finished" at once. Selecting
+    // on `Lines::next_line` directly is not cancel-safe and would drop input.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Line>(concurrency.max(1));
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(tokio::io::stdin()).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(raw)) => {
+                    if raw.trim().is_empty() {
+                        continue;
+                    }
+                    let parsed = match serde_json::from_str::<Query>(&raw) {
+                        Ok(q) => Line::Query(q),
+                        Err(e) => Line::Malformed(e.to_string()),
+                    };
+                    if tx.send(parsed).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::error!(error = %e, "reading stdin");
+                    return;
+                }
+            }
         }
-        let parsed = match serde_json::from_str::<Query>(&raw) {
-            Ok(q) => Line::Query(q),
-            Err(e) => Line::Malformed(e.to_string()),
-        };
+    });
+
+    let mut pending: VecDeque<tokio::task::JoinHandle<serde_json::Value>> = VecDeque::new();
+    let mut failures = 0usize;
+    // One more in flight than there are permits, so a worker can start the
+    // moment one finishes while its result is still being written.
+    let window = concurrency.saturating_add(1).max(2);
+
+    let spawn_one = |parsed: Line| {
         let analyzer = Arc::clone(&analyzer);
         let permits = Arc::clone(&permits);
-        pending.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             match parsed {
                 Line::Query(q) => {
                     let _permit = permits.acquire().await.expect("semaphore closed");
@@ -407,26 +433,53 @@ async fn batch(concurrency: usize, opts: &CommonOpts) -> Result<()> {
                 ))
                 .unwrap_or_else(error_value),
             }
-        }));
+        })
+    };
+
+    let mut input_done = false;
+    loop {
+        // Always emit the oldest first, so output order matches input order
+        // however the tasks finish.
+        if pending.len() >= window || (input_done && !pending.is_empty()) {
+            let handle = pending.pop_front().expect("non-empty");
+            emit(handle.await, &mut failures);
+            continue;
+        }
+        if input_done {
+            break;
+        }
+        let Some(mut front) = pending.pop_front() else {
+            match rx.recv().await {
+                Some(parsed) => pending.push_back(spawn_one(parsed)),
+                None => input_done = true,
+            }
+            continue;
+        };
+        tokio::select! {
+            received = rx.recv() => {
+                pending.push_front(front);
+                match received {
+                    Some(parsed) => pending.push_back(spawn_one(parsed)),
+                    None => input_done = true,
+                }
+            }
+            finished = &mut front => emit(finished, &mut failures),
+        }
     }
 
-    // Awaited in order, so output order matches input order regardless of which
-    // track finished first.
-    let mut failures = 0usize;
-    for handle in pending {
-        let value = match handle.await {
-            Ok(v) => v,
-            Err(e) => error_value(e),
-        };
-        if value.get("status").and_then(|s| s.as_str()) != Some("ok") {
-            failures += 1;
-        }
-        println!("{value}");
-    }
     if failures > 0 {
         tracing::warn!(failures, "some tracks could not be analyzed");
     }
     Ok(())
+}
+
+/// Print one result line, counting it if it was not a success.
+fn emit(finished: Result<serde_json::Value, tokio::task::JoinError>, failures: &mut usize) {
+    let value = finished.unwrap_or_else(error_value);
+    if value.get("status").and_then(|s| s.as_str()) != Some("ok") {
+        *failures += 1;
+    }
+    println!("{value}");
 }
 
 /// Last-resort result object for a failure with no query to attribute it to:
