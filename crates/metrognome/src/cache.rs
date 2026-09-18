@@ -209,6 +209,7 @@ mod tests {
                 sample_rate: 44_100,
                 source_channels: 2,
                 silent_fraction: 0.0,
+                truncated: false,
             },
         }
     }

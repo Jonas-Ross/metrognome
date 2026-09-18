@@ -149,6 +149,14 @@ pub struct AudioInfo {
     /// Fraction of samples below -60 dBFS. A high value on a preview usually
     /// means the clip is an intro or an outro rather than the body of a track.
     pub silent_fraction: f64,
+    /// Whether decoding stopped at the duration limit, so the features describe
+    /// only the opening of a longer file. Absent when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// What was asked for.

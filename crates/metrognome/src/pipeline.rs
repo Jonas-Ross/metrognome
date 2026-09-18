@@ -266,6 +266,7 @@ impl Analyzer {
                     sample_rate: stats.sample_rate,
                     source_channels: stats.source_channels,
                     silent_fraction: stats.silent_fraction,
+                    truncated: pcm.truncated,
                 },
             ))
         })

@@ -23,6 +23,8 @@ use crate::error::{Error, Result};
 pub struct Pcm {
     /// Interleaving is not a concern: channels are already downmixed to mono.
     pub samples: Vec<f32>,
+    /// Whether decoding stopped at [`MAX_DECODE_SECS`] rather than at the end.
+    pub truncated: bool,
     /// Sample rate in Hz, as reported by the decoder.
     pub sample_rate: u32,
     /// Channel count of the *source*, retained for diagnostics only.
@@ -99,6 +101,20 @@ pub struct PcmStats {
 ///
 /// `extension_hint` is an optional container hint ("m4a", "mp3", …). Symphonia
 /// probes regardless; the hint only shortens the search.
+/// Longest audio this will decode, in seconds.
+///
+/// The fetch limit bounds encoded bytes, which says almost nothing about
+/// duration: 8 MB of WAV is nine minutes and costs 32 s of analysis, and the
+/// same 8 MB of low-bitrate AAC is hours. Four times the longest preview leaves
+/// room for a live-capture buffer without letting one row stall a batch.
+/// Truncating beats erroring: a long file still gets an answer for its opening.
+pub const MAX_DECODE_SECS: f64 = 120.0;
+
+/// Decode an encoded audio buffer to mono `f32` PCM.
+///
+/// `extension_hint` is an optional container hint ("m4a", "mp3", …). Symphonia
+/// probes regardless; the hint only shortens the search. Stops at
+/// [`MAX_DECODE_SECS`], flagging [`Pcm::truncated`].
 pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm> {
     if bytes.is_empty() {
         return Err(Error::Decode("empty input".into()));
@@ -135,6 +151,7 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         .map_err(|e| Error::Decode(format!("codec: {e}")))?;
 
     let mut samples: Vec<f32> = Vec::new();
+    let mut truncated = false;
     let mut sample_rate = track.codec_params.sample_rate.unwrap_or(0);
     let mut source_channels = track.codec_params.channels.map_or(0, |c| c.count() as u16);
 
@@ -167,6 +184,14 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
                     source_channels = spec.channels.count() as u16;
                 }
                 append_mono(&buf, &mut samples);
+                if sample_rate > 0 {
+                    let cap = (MAX_DECODE_SECS * f64::from(sample_rate)) as usize;
+                    if samples.len() >= cap {
+                        samples.truncate(cap);
+                        truncated = true;
+                        break;
+                    }
+                }
             }
             // A corrupt packet inside a preview is recoverable: the frames it
             // would have contributed are a rounding error against 30 seconds,
@@ -183,8 +208,16 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         return Err(Error::UnusableAudio("decoded zero frames".into()));
     }
 
+    if truncated {
+        tracing::warn!(
+            limit_secs = MAX_DECODE_SECS,
+            "audio truncated: longer than the decode limit"
+        );
+    }
+
     Ok(Pcm {
         samples,
+        truncated,
         sample_rate,
         source_channels: source_channels.max(1),
     })
@@ -240,6 +273,35 @@ fn append_mono(buf: &AudioBufferRef<'_>, out: &mut Vec<f32>) {
         }
         AudioBufferRef::U16(b) => mix!(b, |v: u16| (f32::from(v) / 32_768.0) - 1.0),
         AudioBufferRef::U8(b) => mix!(b, |v: u8| (f32::from(v) / 128.0) - 1.0),
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_file_is_truncated_rather_than_analyzed_whole() {
+        // The fetch limit bounds encoded bytes, not duration: 8 MB of WAV is
+        // minutes of audio and was costing tens of seconds of analysis.
+        let sr = 8_000;
+        let secs = MAX_DECODE_SECS + 30.0;
+        let wav = crate::testsig::wav_bytes(&vec![0.1f32; (sr as f64 * secs) as usize], sr, 1);
+        let pcm = decode_bytes(wav, Some("wav")).expect("decode");
+        assert!(pcm.truncated, "should have stopped at the limit");
+        assert!(
+            (pcm.duration_secs() - MAX_DECODE_SECS).abs() < 0.01,
+            "got {}",
+            pcm.duration_secs()
+        );
+    }
+
+    #[test]
+    fn a_preview_length_clip_is_not_truncated() {
+        let sr = 8_000;
+        let wav = crate::testsig::wav_bytes(&vec![0.1f32; sr as usize * 30], sr, 1);
+        let pcm = decode_bytes(wav, Some("wav")).expect("decode");
+        assert!(!pcm.truncated);
     }
 }
 
