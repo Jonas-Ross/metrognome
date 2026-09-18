@@ -272,22 +272,22 @@ pub fn pick_best(artist: &str, title: &str, candidates: &[ItunesTrack]) -> Optio
         .map(|(score, c)| to_match(c, score))
 }
 
+/// Bytes of a title that sit inside brackets, before any neutral-qualifier
+/// stripping. Used only as a tiebreak: of two equally good matches, the one
+/// carrying less unrequested text is the one the caller meant.
 fn raw_qualifier_len(c: &ItunesTrack) -> usize {
     let title = c.track_name.as_deref().unwrap_or("");
-    let (core, _) = {
-        let mut core = String::new();
-        let mut depth = 0i32;
-        for ch in title.chars() {
-            match ch {
-                '(' | '[' => depth += 1,
-                ')' | ']' => depth = (depth - 1).max(0),
-                _ if depth == 0 => core.push(ch),
-                _ => {}
-            }
+    let mut depth = 0i32;
+    let mut outside = 0usize;
+    for ch in title.chars() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = (depth - 1).max(0),
+            _ if depth == 0 => outside += ch.len_utf8(),
+            _ => {}
         }
-        (core, ())
-    };
-    title.len().saturating_sub(core.trim().len())
+    }
+    title.len().saturating_sub(outside)
 }
 
 fn to_match(c: &ItunesTrack, score: f32) -> TrackMatch {
@@ -474,6 +474,30 @@ mod tests {
         // Red Hot Chili Peppers also have a track called "Around the World".
         let m = pick_best("Red Hot Chili Peppers", "Around the World", &results).unwrap();
         assert_eq!(m.track_id, 1500000001);
+    }
+
+    #[test]
+    fn the_plainest_title_is_the_tiebreak() {
+        let plain = ItunesTrack {
+            track_id: Some(1),
+            track_name: Some("Strobe".into()),
+            artist_name: Some("deadmau5".into()),
+            collection_name: None,
+            release_date: None,
+            primary_genre_name: None,
+            preview_url: Some("https://example/p.m4a".into()),
+            track_time_millis: None,
+        };
+        let reissue = ItunesTrack {
+            track_id: Some(2),
+            track_name: Some("Strobe (Remastered 2019)".into()),
+            ..plain.clone()
+        };
+        assert!(raw_qualifier_len(&reissue) > raw_qualifier_len(&plain));
+        // Both score identically once the neutral qualifier is stripped, so
+        // the tiebreak is what decides.
+        let picked = pick_best("deadmau5", "Strobe", &[reissue, plain]).unwrap();
+        assert_eq!(picked.track_id, 1);
     }
 
     #[test]
