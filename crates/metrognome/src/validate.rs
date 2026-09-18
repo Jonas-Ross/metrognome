@@ -133,11 +133,25 @@ pub struct ValidationRow {
     pub tempo_confidence: Option<f32>,
     /// Key confidence.
     pub key_confidence: Option<f32>,
-    /// How the estimate relates to the expectation. See [`Verdict`].
+    /// How the tempo estimate relates to its expectation. See [`Verdict`].
     pub verdict: Verdict,
+    /// Whether the key came out as expected. `None` when the case carries no
+    /// key expectation, which is most of [`REFERENCE_TRACKS`] — published key
+    /// references are far less consistent than tempo ones.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_ok: Option<bool>,
     /// Anything that went wrong.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+impl ValidationRow {
+    /// Whether this row is a pass: the tempo landed and, where a key was
+    /// expected, the key did too. The tempo verdict alone is not enough —
+    /// key estimation could be wrong on every case and still exit zero.
+    pub fn passed(&self) -> bool {
+        self.verdict == Verdict::Ok && self.key_ok != Some(false)
+    }
 }
 
 /// How an estimate compares to its expectation.
@@ -183,6 +197,44 @@ pub fn verdict(expected: f32, estimated: Option<f32>) -> Verdict {
     Verdict::Wrong
 }
 
+/// Compare an estimated key against an expected one.
+///
+/// Spelling is normalized on both sides so that "Bb minor", "A# Minor" and
+/// "bb min" all agree: enharmonic spelling is a notation choice, not a
+/// different key, and the reference figures come from sources that pick
+/// either one.
+pub fn key_matches(expected: &str, estimated: &str) -> bool {
+    fn canonical(s: &str) -> String {
+        let lower = s.trim().to_lowercase();
+        let (tonic, mode) = match lower.split_once(char::is_whitespace) {
+            Some((t, m)) => (t, m.trim()),
+            None => (lower.as_str(), ""),
+        };
+        let pc = match tonic {
+            "c" | "b#" => 0,
+            "c#" | "db" => 1,
+            "d" => 2,
+            "d#" | "eb" => 3,
+            "e" | "fb" => 4,
+            "f" | "e#" => 5,
+            "f#" | "gb" => 6,
+            "g" => 7,
+            "g#" | "ab" => 8,
+            "a" => 9,
+            "a#" | "bb" => 10,
+            "b" | "cb" => 11,
+            _ => return lower.clone(),
+        };
+        let mode = if mode.starts_with("min") {
+            "minor"
+        } else {
+            "major"
+        };
+        format!("{pc} {mode}")
+    }
+    canonical(expected) == canonical(estimated)
+}
+
 /// Build a row from features and an expectation.
 pub fn row(
     label: impl Into<String>,
@@ -203,6 +255,16 @@ pub fn row(
         tempo_confidence: features.tempo.as_ref().map(|t| t.confidence),
         key_confidence: features.key.as_ref().map(|k| k.confidence),
         verdict: verdict(expected_bpm, estimated_bpm),
+        key_ok: if expected_key.is_empty() {
+            None
+        } else {
+            Some(
+                features
+                    .key
+                    .as_ref()
+                    .is_some_and(|k| key_matches(expected_key, &k.key)),
+            )
+        },
         error: None,
     }
 }
@@ -237,7 +299,14 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
             } else {
                 r.expected_key.clone()
             },
-            r.estimated_key.clone().unwrap_or_else(|| dash.clone()),
+            match (&r.estimated_key, r.key_ok) {
+                // Bolded only when it was checked and missed, so a wrong key is
+                // as visible in the table as a wrong tempo.
+                (Some(k), Some(false)) => format!("**{k}**"),
+                (Some(k), _) => k.clone(),
+                (None, Some(false)) => "**none**".to_string(),
+                (None, _) => dash.clone(),
+            },
             r.camelot.clone().unwrap_or_else(|| dash.clone()),
             r.key_confidence.map(|v| format!("{v:.2}")).unwrap_or(dash),
         ));
@@ -363,14 +432,58 @@ mod tests {
         let rows = vec![row("x", "house", 128.0, "C major", &Features::default())];
         let table = render_table(&rows);
         assert!(table.lines().count() == 3, "{table}");
-        assert!(table.contains("**none**"));
+        // Both the missing tempo and the unmet key expectation are called out.
+        assert_eq!(table.matches("**none**").count(), 2, "{table}");
     }
 
     #[test]
     #[ignore = "slow: synthesizes and analyzes ten 30-second clips"]
     fn selftest_finds_no_octave_or_metric_errors() {
         let rows = selftest(44_100, &AnalysisOptions::default());
-        let bad: Vec<&ValidationRow> = rows.iter().filter(|r| r.verdict != Verdict::Ok).collect();
+        let bad: Vec<&ValidationRow> = rows.iter().filter(|r| !r.passed()).collect();
         assert!(bad.is_empty(), "{}", render_table(&rows));
+    }
+
+    #[test]
+    fn enharmonic_spellings_are_the_same_key() {
+        assert!(key_matches("Bb minor", "A# Minor"));
+        assert!(key_matches("F# major", "Gb major"));
+        assert!(key_matches("C major", "c maj"));
+        assert!(!key_matches("A minor", "A major"));
+        assert!(!key_matches("A minor", "C minor"));
+    }
+
+    #[test]
+    fn a_wrong_key_fails_the_row_even_when_the_tempo_is_right() {
+        let features = Features {
+            tempo: Some(crate::types::TempoEstimate {
+                bpm: 128.0,
+                confidence: 0.9,
+                uncertain: false,
+                source: "test".into(),
+                beat_offset_secs: 0.0,
+                canonical_window_bpm: [90.0, 180.0],
+                alternates: Vec::new(),
+            }),
+            key: Some(crate::types::KeyEstimate {
+                key: "A minor".into(),
+                tonic: "A".into(),
+                mode: "minor".into(),
+                camelot: "8A".into(),
+                confidence: 0.9,
+                uncertain: false,
+                source: "test".into(),
+                alternates: Vec::new(),
+            }),
+        };
+        let r = row("x", "house", 128.0, "C major", &features);
+        assert_eq!(r.verdict, Verdict::Ok);
+        assert_eq!(r.key_ok, Some(false));
+        assert!(!r.passed(), "a wrong key must fail the row");
+
+        // No expectation means no opinion, not a failure.
+        let r = row("x", "house", 128.0, "", &features);
+        assert_eq!(r.key_ok, None);
+        assert!(r.passed());
     }
 }
