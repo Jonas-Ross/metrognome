@@ -40,6 +40,15 @@ async fn serve() -> SocketAddr {
 
                 let (content_type, body): (&str, Vec<u8>) = if path.starts_with("/preview") {
                     ("audio/wav", preview)
+                } else if path.contains("id=777") {
+                    // The row exists and is permanently unanalyzable, which is
+                    // a different state from an ID that matches nothing.
+                    (
+                        "application/json",
+                        br#"{"resultCount":1,"results":[{"wrapperType":"track","kind":"song",
+                        "trackId":777,"artistName":"Test Act","trackName":"No Preview"}]}"#
+                            .to_vec(),
+                    )
                 } else if path.starts_with("/search") || path.starts_with("/lookup") {
                     let json = format!(
                         r#"{{"resultCount":1,"results":[{{"wrapperType":"track","kind":"song",
@@ -154,9 +163,30 @@ async fn a_lookup_that_returns_nothing_useful_is_a_reportable_failure() {
         .await;
 
     assert_eq!(out.status, "error");
-    assert_eq!(out.error.expect("error").kind, "no_preview");
+    // Not `no_preview`: that kind says the track exists and can never be
+    // analyzed, which a consumer may record and never retry. A mistyped ID
+    // would then be marked terminally unanalyzable.
+    assert_eq!(out.error.expect("error").kind, "not_found");
     // The query survives the failure so the caller can tell which row broke.
     assert_eq!(out.query.client_ref.as_deref(), Some("keep-me"));
+}
+
+#[tokio::test]
+async fn a_track_with_no_preview_is_a_different_failure_from_a_missing_one() {
+    let addr = serve().await;
+    let analyzer = Analyzer::new(&uncached())
+        .expect("analyzer")
+        .with_base_url(format!("http://{addr}"));
+
+    let out = analyzer
+        .analyze(Query {
+            track_id: Some(777),
+            ..Default::default()
+        })
+        .await;
+
+    assert_eq!(out.status, "error");
+    assert_eq!(out.error.expect("error").kind, "no_preview");
 }
 
 /// Serves an endless chunked body with no `Content-Length`, which is how a

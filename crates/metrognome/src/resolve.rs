@@ -383,7 +383,10 @@ impl Resolver {
             // An ID is an exact identification, so the score is 1.0 by
             // definition — there is no fuzziness to report.
             .map(|c| to_match(c, 1.0))
-            .ok_or(Error::NoPreview { track_id })
+            // Not NoPreview: that says the track exists and can never be
+            // analyzed, which a consumer may record and never retry. A missing
+            // row means the ID is wrong or regional.
+            .ok_or(Error::NotFound { track_id })
             .and_then(|m| {
                 if m.preview_url.is_some() {
                     Ok(m)

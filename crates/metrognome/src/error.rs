@@ -25,6 +25,17 @@ pub enum Error {
         title: String,
     },
 
+    /// No track with this store ID exists in the response.
+    ///
+    /// Distinct from [`Error::NoPreview`]: that one means the track exists and
+    /// is permanently unanalyzable, which a consumer may record and never
+    /// retry. This means the ID is wrong or regional.
+    #[error("no track with id {track_id}")]
+    NotFound {
+        /// iTunes store track ID as queried.
+        track_id: i64,
+    },
+
     /// A resolved track has no `previewUrl` (common for some territories).
     #[error("track {track_id} has no preview url")]
     NoPreview {
@@ -63,6 +74,8 @@ pub enum ErrorKind {
     UnusableAudio,
     /// See [`Error::NoMatch`].
     NoMatch,
+    /// See [`Error::NotFound`].
+    NotFound,
     /// See [`Error::NoPreview`].
     NoPreview,
     /// See [`Error::Http`].
@@ -81,6 +94,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::Decode => "decode",
             ErrorKind::UnusableAudio => "unusable_audio",
             ErrorKind::NoMatch => "no_match",
+            ErrorKind::NotFound => "not_found",
             ErrorKind::NoPreview => "no_preview",
             ErrorKind::Http => "http",
             ErrorKind::Cache => "cache",
@@ -98,6 +112,7 @@ impl Error {
             Error::Decode(_) => ErrorKind::Decode,
             Error::UnusableAudio(_) => ErrorKind::UnusableAudio,
             Error::NoMatch { .. } => ErrorKind::NoMatch,
+            Error::NotFound { .. } => ErrorKind::NotFound,
             Error::NoPreview { .. } => ErrorKind::NoPreview,
             Error::Http(_) => ErrorKind::Http,
             Error::Cache(_) => ErrorKind::Cache,
@@ -118,6 +133,7 @@ mod tests {
     fn kind_strings_are_snake_case_and_stable() {
         assert_eq!(ErrorKind::NoMatch.to_string(), "no_match");
         assert_eq!(ErrorKind::UnusableAudio.to_string(), "unusable_audio");
+        assert_eq!(ErrorKind::NotFound.to_string(), "not_found");
         assert_eq!(
             Error::NoPreview { track_id: 7 }.kind(),
             ErrorKind::NoPreview
