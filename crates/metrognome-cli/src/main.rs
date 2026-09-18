@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use metrognome::{AnalysisOptions, Analyzer, AnalyzerConfig, KeyProfile, Query};
+use metrognome::{Analysis, AnalysisOptions, Analyzer, AnalyzerConfig, Error, KeyProfile, Query};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
 
@@ -263,12 +263,11 @@ async fn main() -> Result<()> {
 /// whose whole point is to be read by a person.
 fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
     eprintln!("\n{}", metrognome::validate::render_table(rows));
-    let failures = rows
-        .iter()
-        .filter(|r| r.verdict != metrognome::validate::Verdict::Ok)
-        .count();
+    // A row passes only if the tempo landed *and*, where one was expected, the
+    // key did. Counting tempo alone would let key estimation rot silently.
+    let failures = rows.iter().filter(|r| !r.passed()).count();
     eprintln!(
-        "{} of {} within {} BPM",
+        "{} of {} within {} BPM with the expected key",
         rows.len() - failures,
         rows.len(),
         metrognome::validate::BPM_TOLERANCE
@@ -325,12 +324,16 @@ async fn batch(concurrency: usize, opts: &CommonOpts) -> Result<()> {
                 }
                 // A line that is not valid JSON still gets a result object, so
                 // the output has exactly one line per input line and a consumer
-                // reading them positionally never loses alignment.
-                Line::Malformed(message) => serde_json::json!({
-                    "schema_version": metrognome::SCHEMA_VERSION,
-                    "status": "error",
-                    "error": { "kind": "invalid_input", "message": message },
-                }),
+                // reading them positionally never loses alignment. It is a full
+                // `Analysis` with an empty query, not a smaller ad-hoc object:
+                // a consumer deserializing every line as `Analysis` must not
+                // fail on precisely the row batch mode promises to report.
+                Line::Malformed(message) => serde_json::to_value(Analysis::failed(
+                    Query::default(),
+                    None,
+                    &Error::InvalidInput(message),
+                ))
+                .unwrap_or_else(error_value),
             }
         }));
     }
@@ -354,10 +357,19 @@ async fn batch(concurrency: usize, opts: &CommonOpts) -> Result<()> {
     Ok(())
 }
 
+/// Last-resort result object for a failure with no query to attribute it to:
+/// a panicked analysis task, or a result that would not serialize.
 fn error_value(e: impl std::fmt::Display) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": metrognome::SCHEMA_VERSION,
-        "status": "error",
-        "error": { "kind": "internal", "message": e.to_string() },
+    let analysis = Analysis::failed(Query::default(), None, &Error::Internal(e.to_string()));
+    serde_json::to_value(&analysis).unwrap_or_else(|_| {
+        serde_json::json!({
+            "schema_version": metrognome::SCHEMA_VERSION,
+            "algorithm_version": metrognome::ALGORITHM_VERSION,
+            "status": "error",
+            "query": {},
+            "features": {},
+            "cached": false,
+            "error": { "kind": "internal", "message": e.to_string() },
+        })
     })
 }

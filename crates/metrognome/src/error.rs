@@ -44,6 +44,12 @@ pub enum Error {
     /// Caller passed something structurally invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// A bug in metrognome itself: a panicked task, a serialization failure.
+    /// Never expected; present so that every emitted result object can carry a
+    /// real [`ErrorKind`] rather than an invented string.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 /// Stable, machine-readable discriminator for [`Error`].
@@ -66,6 +72,8 @@ pub enum ErrorKind {
     Cache,
     /// See [`Error::InvalidInput`].
     InvalidInput,
+    /// See [`Error::Internal`].
+    Internal,
 }
 
 impl fmt::Display for ErrorKind {
@@ -78,6 +86,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::Http => "http",
             ErrorKind::Cache => "cache",
             ErrorKind::InvalidInput => "invalid_input",
+            ErrorKind::Internal => "internal",
         };
         f.write_str(s)
     }
@@ -94,6 +103,7 @@ impl Error {
             Error::Http(_) => ErrorKind::Http,
             Error::Cache(_) => ErrorKind::Cache,
             Error::InvalidInput(_) => ErrorKind::InvalidInput,
+            Error::Internal(_) => ErrorKind::Internal,
         }
     }
 }

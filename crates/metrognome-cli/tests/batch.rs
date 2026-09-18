@@ -120,6 +120,14 @@ async fn batch_emits_one_line_per_input_in_order_and_never_drops_a_row() {
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("line not JSON: {l} ({e})")))
         .collect();
 
+    // Every line, failures included, is a full `Analysis`. A consumer that
+    // deserializes the stream into one type must not choke on precisely the
+    // bad row batch mode exists to report.
+    for l in &lines {
+        serde_json::from_str::<metrognome::Analysis>(l)
+            .unwrap_or_else(|e| panic!("line is not an Analysis: {l} ({e})"));
+    }
+
     // Order is input order, not completion order.
     assert_eq!(parsed[0]["query"]["client_ref"], "first");
     assert_eq!(parsed[0]["status"], "ok");
@@ -181,6 +189,60 @@ async fn a_second_run_is_served_from_the_cache() {
     let second = run();
     assert_eq!(second["cached"], true);
     assert_eq!(first["features"], second["features"]);
+
+    let _ = std::fs::remove_file(&cache);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cache_hit_reports_this_query_s_match_not_the_one_that_filled_it() {
+    let sr = 44_100;
+    let preview = metrognome::testsig::wav_bytes(
+        &metrognome::testsig::groove(126.0, 20.0, sr, metrognome::testsig::Groove::FourOnFloor),
+        sr,
+        1,
+    );
+    let addr = serve(preview).await;
+    let cache = std::env::temp_dir().join(format!("mg-match-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&cache);
+
+    let run = |title: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_metrognome"))
+            .args([
+                "analyze",
+                "--artist",
+                "Test Act",
+                "--title",
+                title,
+                "--api-base-url",
+                &format!("http://{addr}"),
+                "--cache-path",
+                cache.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run metrognome");
+        serde_json::from_slice::<metrognome::Analysis>(&out.stdout).expect("analysis on stdout")
+    };
+
+    // The store answers every search with the same track, so a good query and
+    // a bad one land on one cache row. The analysis is shared; the match is not.
+    let exact = run("Test Track");
+    assert!(!exact.cached);
+    let exact_score = exact.track.as_ref().expect("track").match_score;
+    assert!(exact_score > 0.9, "score {exact_score}");
+
+    let sloppy = run("Something Else Entirely");
+    assert!(sloppy.cached, "second query should reuse the analysis");
+    let t = sloppy.track.as_ref().expect("track");
+    assert!(
+        t.match_score < exact_score,
+        "a cache hit reported the earlier query's match score: {} vs {exact_score}",
+        t.match_score
+    );
+    assert!(
+        t.uncertain,
+        "a weak match must stay flagged through the cache"
+    );
+    assert_eq!(exact.features, sloppy.features, "features are shared");
 
     let _ = std::fs::remove_file(&cache);
 }

@@ -80,7 +80,10 @@ optional fields rather than by moving existing ones.
 ```
 
 A failure is the same object with `status: "error"` and an `error` field
-carrying a stable `kind` — never a crash, and never a missing row.
+carrying a stable `kind` — never a crash, and never a missing row. That holds
+for every line `batch` emits, including one whose input was not valid JSON: it
+comes back as a full result object with an empty `query`, so a consumer can
+deserialize every line into one type without special-casing the bad row.
 
 Batch input lines take the same shape as `query`, including an optional
 `client_ref` that is echoed back untouched: selecta keys its library on
