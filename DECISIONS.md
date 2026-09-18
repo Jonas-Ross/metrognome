@@ -256,3 +256,40 @@ two, so the tolerance is 2 BPM and the verdict column names *how* an estimate is
 wrong — `OCTAVE`, `METRIC`, `wrong` — rather than just that it is. An octave
 error appearing there would mean the canonical fold is not doing its job, which
 is a different bug from a scoring one.
+
+## 21. The resolution cache carries a matcher version; the analysis cache does not
+
+`ALGORITHM_VERSION` gates the analysis cache, so a DSP change is never served
+from stale rows. The resolution cache had no equivalent: it is keyed by query
+text, so a change to how a query is matched against store results would never
+reach anyone whose cache was already warm — they would keep being handed
+whichever track the old scorer picked. `MATCHER_VERSION` now prefixes the
+resolution key, so a matching change misses on purpose. Old rows are left in
+place rather than deleted; the cache is disposable and a dead row costs bytes,
+not correctness.
+
+A resolution by store track ID is exempt. An ID identifies rather than
+describes, so no amount of matching change can make it point somewhere else.
+
+## 22. A cache hit reuses the analysis, never the match
+
+The analysis cache is keyed by store track ID, which is right: the audio is the
+same whoever asked for it. The match is not. `match_score` and `uncertain`
+describe how well *this* query matched, so serving them from whichever query
+filled the row meant a sloppy fuzzy query could inherit an earlier exact one's
+score and be reported as a confident match. The whole point of returning matched
+metadata is that a bad match is visible, and this quietly hid one. A hit now
+returns cached features and audio with the freshly resolved track.
+
+## 23. Key correctness counts in the validation verdict
+
+`Verdict` classifies the tempo, and the report carries both expected and
+estimated keys — but the pass/fail only ever read the tempo, so `selftest` and
+the CI accuracy gate would have exited zero with key estimation wrong on every
+case. A row now passes only when the tempo lands *and*, where a key was
+expected, the key matches. Comparison is enharmonic: "Bb minor" and "A# minor"
+are the same key, and published references pick either spelling.
+
+Most of `REFERENCE_TRACKS` carries no expected key, and that stays true —
+inventing expectations to make the column look full would make the table more
+authoritative than it is. No expectation means no opinion, not a pass.
