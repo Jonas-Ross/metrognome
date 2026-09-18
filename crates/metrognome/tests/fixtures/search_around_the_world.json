@@ -1,0 +1,64 @@
+{
+  "resultCount": 4,
+  "results": [
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "artistId": 5468295,
+      "collectionId": 1440857772,
+      "trackId": 1440857781,
+      "artistName": "Daft Punk",
+      "collectionName": "Homework",
+      "trackName": "Around the World",
+      "collectionCensoredName": "Homework",
+      "trackCensoredName": "Around the World",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/around-the-world.m4a",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/example/100x100bb.jpg",
+      "collectionPrice": 9.99,
+      "trackPrice": 1.29,
+      "releaseDate": "1997-01-20T12:00:00Z",
+      "trackCount": 16,
+      "trackNumber": 7,
+      "trackTimeMillis": 429000,
+      "country": "USA",
+      "currency": "USD",
+      "primaryGenreName": "Electronic",
+      "isStreamable": true
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 1440857999,
+      "artistName": "Daft Punk",
+      "collectionName": "Musique, Vol. 1 (1993-2005)",
+      "trackName": "Around the World (Radio Edit)",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/around-the-world-radio.m4a",
+      "releaseDate": "2006-03-28T12:00:00Z",
+      "trackTimeMillis": 234000,
+      "primaryGenreName": "Electronic"
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 1440858123,
+      "artistName": "Daft Punk",
+      "collectionName": "Alive 1997",
+      "trackName": "Around the World (Live)",
+      "releaseDate": "2001-09-24T12:00:00Z",
+      "trackTimeMillis": 611000,
+      "primaryGenreName": "Electronic"
+    },
+    {
+      "wrapperType": "track",
+      "kind": "song",
+      "trackId": 1500000001,
+      "artistName": "Red Hot Chili Peppers",
+      "collectionName": "Californication",
+      "trackName": "Around the World",
+      "previewUrl": "https://audio-ssl.itunes.apple.com/example/rhcp-around-the-world.m4a",
+      "releaseDate": "1999-06-08T12:00:00Z",
+      "trackTimeMillis": 238000,
+      "primaryGenreName": "Alternative"
+    }
+  ]
+}
