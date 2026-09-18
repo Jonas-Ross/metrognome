@@ -273,7 +273,7 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
     // Strength and margin neither substitute for the other: a strong
     // correlation that ties with the relative minor is still a coin flip, and a
     // clear winner among uniformly weak correlations is noise.
-    let confidence = strength.sqrt() * margin.sqrt() * tonality;
+    let confidence = crate::types::normalize_confidence(strength.sqrt() * margin.sqrt() * tonality);
 
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
@@ -298,7 +298,7 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
         tonic: PITCH_NAMES[tonic].to_string(),
         mode: mode.to_string(),
         camelot: camelot(tonic, is_minor),
-        confidence: (confidence * 1000.0).round() / 1000.0,
+        confidence,
         uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
         source: profile.source().to_string(),
         alternates,

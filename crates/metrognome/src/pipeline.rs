@@ -43,6 +43,22 @@ pub fn analyze_pcm(samples: &[f32], sample_rate: u32) -> Features {
 
 /// As [`analyze_pcm`], with explicit options.
 pub fn analyze_pcm_with(samples: &[f32], sample_rate: u32, options: &AnalysisOptions) -> Features {
+    // One non-finite sample poisons every downstream sum, and the result is a
+    // NaN confidence that serializes as `null` — which this crate's own types
+    // then refuse to parse. One pass is nothing next to two STFTs, and this is
+    // the gate a live-capture tap passes through as well as a decoded preview.
+    let sanitized: Option<Vec<f32>> = if samples.iter().all(|s| s.is_finite()) {
+        None
+    } else {
+        Some(
+            samples
+                .iter()
+                .map(|s| if s.is_finite() { *s } else { 0.0 })
+                .collect(),
+        )
+    };
+    let samples = sanitized.as_deref().unwrap_or(samples);
+
     // Tempo and key share nothing but the samples, and each is dominated by its
     // own STFT, so they are worth running side by side.
     let (tempo, key) = rayon::join(
@@ -297,6 +313,35 @@ mod tests {
         let sig = testsig::groove(124.0, 30.0, 48_000, Groove::FourOnFloor);
         let f = analyze_pcm(&sig, 48_000);
         assert!((f.tempo.unwrap().bpm - 124.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn non_finite_pcm_never_produces_a_confident_feature_or_unparseable_json() {
+        // Float WAV can carry these, and symphonia's `pcm` feature decodes it.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let features = analyze_pcm(&vec![bad; 441_000], 44_100);
+            let json = serde_json::to_string(&features)
+                .unwrap_or_else(|e| panic!("{bad} did not serialize: {e}"));
+            // The contract type has to be able to read back what we emit;
+            // a NaN confidence serializes as `null` and fails right here.
+            serde_json::from_str::<Features>(&json)
+                .unwrap_or_else(|e| panic!("{bad} emitted unparseable JSON: {json} ({e})"));
+            if let Some(k) = &features.key {
+                assert!(k.confidence.is_finite() && k.uncertain, "{bad}: {k:?}");
+            }
+            if let Some(t) = &features.tempo {
+                assert!(t.confidence.is_finite() && t.uncertain, "{bad}: {t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_non_finite_sample_does_not_poison_a_good_clip() {
+        let sr = 44_100;
+        let mut samples = crate::testsig::click_track(128.0, 20.0, sr);
+        samples[sr as usize] = f32::NAN;
+        let tempo = analyze_pcm(&samples, sr).tempo.expect("tempo");
+        assert!((tempo.bpm - 128.0).abs() < 1.0, "got {}", tempo.bpm);
     }
 
     #[test]

@@ -408,13 +408,13 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         .map(|c| c.score);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
-    let confidence = confidence(
+    let confidence = crate::types::normalize_confidence(confidence(
         best.mean,
         best.sd,
         rival.map(|r| best.score - r),
         periodicity,
         observed_beats,
-    );
+    ));
 
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
@@ -463,7 +463,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
 
     Some(TempoEstimate {
         bpm: round2(best.bpm),
-        confidence: round3(confidence),
+        confidence,
         uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
         source: TEMPO_SOURCE.into(),
         beat_offset_secs: round3(beat_offset),

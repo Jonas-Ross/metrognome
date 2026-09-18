@@ -18,6 +18,21 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// treat anything under this as a hint, not a measurement.
 pub const UNCERTAIN_AT_OR_BELOW: f32 = 0.5;
 
+/// Normalize a computed confidence into the finite 0-1 range the contract
+/// promises.
+///
+/// Non-finite becomes 0. A NaN confidence serializes as `null`, which
+/// [`Features`] refuses to deserialize, and compares false against every
+/// threshold — so a guess with nothing behind it would ship as `uncertain:
+/// false`.
+pub fn normalize_confidence(c: f32) -> f32 {
+    if c.is_finite() {
+        (c.clamp(0.0, 1.0) * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    }
+}
+
 /// One alternate reading of a feature, with how it relates to the chosen one.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Alternate {

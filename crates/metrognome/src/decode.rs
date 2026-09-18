@@ -212,7 +212,10 @@ fn append_mono(buf: &AudioBufferRef<'_>, out: &mut Vec<f32>) {
                         acc += ($conv)(b.chan(ch)[i]);
                     }
                 }
-                out.push(acc / channels as f32);
+                // Float WAV can carry NaN and Inf. Zero is silence; a
+                // non-finite sample is a poisoned analysis.
+                let v = acc / channels as f32;
+                out.push(if v.is_finite() { v } else { 0.0 });
             }
         }};
     }
