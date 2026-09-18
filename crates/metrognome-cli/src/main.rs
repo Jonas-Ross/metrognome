@@ -220,6 +220,29 @@ async fn main() -> Result<()> {
                     &result.features,
                 );
                 row.error = result.error.map(|e| format!("{}: {}", e.kind, e.message));
+                // Carry what the query actually resolved to. Without it a bad
+                // match and a bad estimate are indistinguishable in the table.
+                if let (Some(track), Some(audio)) = (&result.track, &result.audio) {
+                    row.matched = Some(metrognome::validate::MatchedTrack {
+                        artist: track.artist.clone(),
+                        title: track.title.clone(),
+                        match_score: track.match_score,
+                        uncertain: track.uncertain,
+                        preview_secs: audio.duration_secs,
+                        silent_fraction: audio.silent_fraction,
+                        tempo_alternates: result
+                            .features
+                            .tempo
+                            .as_ref()
+                            .map(|t| {
+                                t.alternates
+                                    .iter()
+                                    .map(|a| (a.value, a.relation.clone()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    });
+                }
                 rows.push(row);
             }
             report(&rows)?;
@@ -272,10 +295,11 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
         rows.len(),
         metrognome::validate::BPM_TOLERANCE
     );
-    // The table has no room for an error message, and "no estimate" without a
-    // reason is the least useful thing a validation run could tell you.
-    for r in rows.iter().filter(|r| r.error.is_some()) {
-        eprintln!("  {}: {}", r.label, r.error.as_deref().unwrap_or_default());
+    // The table says which rows are wrong; this says what they were wrong
+    // about. Failures only — a passing row needs no explaining.
+    let diagnostics = metrognome::validate::render_diagnostics(rows);
+    if !diagnostics.is_empty() {
+        eprintln!("\n{diagnostics}");
     }
     eprintln!();
     println!(

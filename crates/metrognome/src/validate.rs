@@ -143,6 +143,33 @@ pub struct ValidationRow {
     /// Anything that went wrong.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What the store actually returned, once resolved. A wrong estimate on
+    /// the right recording and a right estimate on the wrong recording look
+    /// identical in the tempo column, and they are completely different bugs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched: Option<MatchedTrack>,
+}
+
+/// What a reference query resolved to, and what the audio behind it looked
+/// like. Only a live run has this; the synthetic selftest resolves nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedTrack {
+    /// Artist as the store spells it.
+    pub artist: String,
+    /// Title as the store spells it, qualifiers and all.
+    pub title: String,
+    /// 0-1 match score for the query that found it.
+    pub match_score: f32,
+    /// Whether the matcher flagged this match as a guess.
+    pub uncertain: bool,
+    /// Length of the preview that was analyzed.
+    pub preview_secs: f64,
+    /// Fraction of the preview below -60 dBFS. A high value means the clip is
+    /// an intro, an outro or a breakdown rather than the body of the track.
+    pub silent_fraction: f64,
+    /// Tempo alternates that were on offer, best first, as `(bpm, relation)`.
+    #[serde(default)]
+    pub tempo_alternates: Vec<(f64, String)>,
 }
 
 impl ValidationRow {
@@ -254,6 +281,7 @@ pub fn row(
         camelot: features.key.as_ref().map(|k| k.camelot.clone()),
         tempo_confidence: features.tempo.as_ref().map(|t| t.confidence),
         key_confidence: features.key.as_ref().map(|k| k.confidence),
+        matched: None,
         verdict: verdict(expected_bpm, estimated_bpm),
         key_ok: if expected_key.is_empty() {
             None
@@ -310,6 +338,56 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
             r.camelot.clone().unwrap_or_else(|| dash.clone()),
             r.key_confidence.map(|v| format!("{v:.2}")).unwrap_or(dash),
         ));
+    }
+    out
+}
+
+/// Render the per-failure detail that the table has no room for.
+///
+/// The table says a row is wrong. This says what it was wrong *about*: which
+/// recording the query actually resolved to, whether the preview had any music
+/// in it, and whether the expected tempo was among the alternates. Those three
+/// separate a resolution bug from a beatless clip from a genuine scoring miss,
+/// and the table alone cannot tell them apart.
+pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
+    let mut out = String::new();
+    for r in rows.iter().filter(|r| !r.passed()) {
+        out.push_str(&format!("{}\n", r.label));
+        if let Some(e) = &r.error {
+            out.push_str(&format!("    failed: {e}\n"));
+        }
+        let Some(m) = &r.matched else {
+            continue;
+        };
+        let flag = if m.uncertain { "  <- UNCERTAIN" } else { "" };
+        out.push_str(&format!(
+            "    matched: {} - {} [{:.2}]{}\n",
+            m.artist, m.title, m.match_score, flag
+        ));
+        out.push_str(&format!(
+            "    preview: {:.1}s, {:.0}% silent\n",
+            m.preview_secs,
+            m.silent_fraction * 100.0
+        ));
+        if !m.tempo_alternates.is_empty() {
+            let alts: Vec<String> = m
+                .tempo_alternates
+                .iter()
+                .map(|(bpm, rel)| format!("{bpm:.2} ({rel})"))
+                .collect();
+            out.push_str(&format!("    alternates: {}\n", alts.join(", ")));
+            // The expected tempo being on the shortlist but not chosen is a
+            // scoring problem; it being absent is an envelope problem.
+            let near = m
+                .tempo_alternates
+                .iter()
+                .any(|(bpm, _)| (*bpm as f32 - r.expected_bpm).abs() <= BPM_TOLERANCE);
+            out.push_str(&format!(
+                "    expected {:.0} was {} the alternates\n",
+                r.expected_bpm,
+                if near { "AMONG" } else { "not among" }
+            ));
+        }
     }
     out
 }
@@ -442,6 +520,58 @@ mod tests {
         let rows = selftest(44_100, &AnalysisOptions::default());
         let bad: Vec<&ValidationRow> = rows.iter().filter(|r| !r.passed()).collect();
         assert!(bad.is_empty(), "{}", render_table(&rows));
+    }
+
+    #[test]
+    fn diagnostics_separate_a_bad_match_from_a_bad_estimate() {
+        let mut r = row("x", "dnb", 172.0, "", &Features::default());
+        r.matched = Some(MatchedTrack {
+            artist: "Goldie".into(),
+            title: "Inner City Life (Radio Edit)".into(),
+            match_score: 0.82,
+            uncertain: true,
+            preview_secs: 30.0,
+            silent_fraction: 0.4,
+            tempo_alternates: vec![(155.0, "double".into()), (77.5, "half".into())],
+        });
+        let d = render_diagnostics(&[r]);
+        assert!(d.contains("Inner City Life (Radio Edit)"), "{d}");
+        assert!(d.contains("UNCERTAIN"), "{d}");
+        assert!(d.contains("40% silent"), "{d}");
+        // 172 is nowhere near 155 or 77.5, so this reads as an envelope problem
+        // rather than the scorer picking the wrong candidate off the shortlist.
+        assert!(d.contains("not among the alternates"), "{d}");
+
+        let mut r = row("y", "dnb", 174.0, "", &Features::default());
+        r.matched = Some(MatchedTrack {
+            artist: "Pendulum".into(),
+            title: "Tarantula".into(),
+            match_score: 1.0,
+            uncertain: false,
+            preview_secs: 30.0,
+            silent_fraction: 0.01,
+            tempo_alternates: vec![(174.0, "double".into())],
+        });
+        let d = render_diagnostics(&[r]);
+        assert!(d.contains("AMONG the alternates"), "{d}");
+        assert!(!d.contains("UNCERTAIN"), "{d}");
+    }
+
+    #[test]
+    fn a_passing_row_needs_no_diagnostics() {
+        let features = Features {
+            tempo: Some(crate::types::TempoEstimate {
+                bpm: 128.0,
+                confidence: 0.9,
+                uncertain: false,
+                source: "test".into(),
+                beat_offset_secs: 0.0,
+                canonical_window_bpm: [90.0, 180.0],
+                alternates: Vec::new(),
+            }),
+            key: None,
+        };
+        assert!(render_diagnostics(&[row("x", "house", 128.0, "", &features)]).is_empty());
     }
 
     #[test]
