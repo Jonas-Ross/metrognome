@@ -77,9 +77,9 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     ReferenceTrack {
         artist: "The Chemical Brothers",
         title: "Hey Boy Hey Girl",
-        // Unverified: hand-entered, never checked against an outside source.
-        expected_bpm: 130.0,
-        expected_key: "",
+        // Checked against a published listing.
+        expected_bpm: 127.0,
+        expected_key: "D",
         genre: "big beat / techno",
     },
     ReferenceTrack {
@@ -95,9 +95,10 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     ReferenceTrack {
         artist: "Underworld",
         title: "Born Slippy .NUXX",
-        // Unverified: hand-entered, never checked against an outside source.
-        expected_bpm: 138.0,
-        expected_key: "",
+        // Checked against a published listing, which gives the same figure for
+        // the original and the radio edit.
+        expected_bpm: 140.0,
+        expected_key: "Bb",
         genre: "techno",
     },
     ReferenceTrack {

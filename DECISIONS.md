@@ -526,3 +526,31 @@ and the confidence field is how a consumer is told so.
 This is a scope call, not a deferral: metrognome reports measurements with their
 uncertainty, and claiming a validated key would be reporting a measurement we
 have not made.
+
+## 32. The reference set is fully verified; key holds at provisional (amends 31)
+
+Both remaining disagreements were the reference, not the estimator. Published
+listings give Born Slippy .NUXX as 140 (the same for the original and the radio
+edit) against the 138 written here from memory, and Hey Boy Hey Girl as 127
+against 130. metrognome read 140.09 and 126.99. Every tempo in the set is now
+checked against an outside source and every one of them lands.
+
+That is the third hand-entered figure in this set to be wrong — Inner City Life
+was 172 in entry 27 and is 155 — and the estimator has not yet been wrong on a
+figure that was verified first. The rule that follows: a disagreement is a
+question about the reference until the reference has been checked, and tuning
+the scorer toward an unverified number would have moved the algorithm away from
+correct answers three times over.
+
+Those listings also carry keys, which takes the documented key cases from one to
+three. Born Slippy reads Bb against a published Bb, Hey Boy Hey Girl reads D
+against a published D, and Sandstorm still reads E minor against a published B.
+Two of three, where entry 31 had zero of one.
+
+The call in 31 stands anyway. Two agreements are not validation, the sample is
+three, and the one disagreement is the confidently wrong shape that matters
+most — Sandstorm reports its wrong key at confidence 1.00 while Born Slippy
+reports its right one at 0.65. A feature whose confidence is highest where it is
+wrong has not earned being called validated. What has changed is that key now
+has evidence for it rather than only against, and the reference set carries
+enough documented keys to notice a regression.
