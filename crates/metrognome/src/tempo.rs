@@ -107,19 +107,13 @@ const CONSISTENCY_PENALTY: f32 = 1.0;
 /// background: a clean four-on-the-floor sits near 5, a wrong tempo near 0. No
 /// tolerance window — sequenced material is metronomic to under a frame, and a
 /// window would blur the discrimination refinement depends on.
-fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
-    let none = CombScore {
-        score: 0.0,
-        mean: 0.0,
-        sd: 0.0,
-        phase_frames: 0.0,
-    };
+fn comb_score(env: &[f32], fps: f32, bpm: f32) -> Option<CombScore> {
     if bpm <= 0.0 || env.len() < 2 {
-        return none;
+        return None;
     }
     let period = 60.0 * fps / bpm;
     if period < 2.0 || period as usize >= env.len() {
-        return none;
+        return None;
     }
 
     // The envelope is z-scored, so it has negatives. Below-average frames are
@@ -131,7 +125,7 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
     // alignment; folding it in here lets a candidate shop for a phase where its
     // beats are uniformly mediocre.
     let steps = (period * 2.0).ceil() as usize;
-    let mut best = none;
+    let mut best = None;
     let mut best_mean = f32::MIN;
     for s in 0..steps {
         let phase = s as f32 * 0.5;
@@ -160,12 +154,12 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> CombScore {
             let precision = mean - CONSISTENCY_PENALTY * sd;
             let missed = 1.0 - recall(env, fps, period, phase, total);
             let score = precision - MISS_PENALTY * missed;
-            best = CombScore {
+            best = Some(CombScore {
                 score,
                 mean,
                 sd,
                 phase_frames: phase,
-            };
+            });
         }
     }
     best
@@ -255,16 +249,9 @@ fn precision_pass(env: &[f32], fps: f32, coarse_bpm: f32) -> f32 {
 }
 
 /// Sharpen a coarse candidate by scanning a fine tempo grid around it.
-fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
+fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Option<Candidate> {
     let clip_beats = (env.len() as f32 / fps) * coarse_bpm / 60.0;
-    let c = comb_score(env, fps, coarse_bpm);
-    let mut best = Candidate {
-        bpm: coarse_bpm,
-        score: c.score,
-        mean: c.mean,
-        sd: c.sd,
-        phase_frames: c.phase_frames,
-    };
+    let mut best = comb_score(env, fps, coarse_bpm).map(|c| Candidate::at(coarse_bpm, c));
     if clip_beats < 4.0 {
         return best;
     }
@@ -276,15 +263,10 @@ fn refine(env: &[f32], fps: f32, coarse_bpm: f32) -> Candidate {
         if !(CANONICAL_LOW_BPM..CANONICAL_HIGH_BPM).contains(&bpm) {
             continue;
         }
-        let c = comb_score(env, fps, bpm);
-        if c.score > best.score {
-            best = Candidate {
-                bpm,
-                score: c.score,
-                mean: c.mean,
-                sd: c.sd,
-                phase_frames: c.phase_frames,
-            };
+        if let Some(c) = comb_score(env, fps, bpm) {
+            if best.as_ref().is_none_or(|b| c.score > b.score) {
+                best = Some(Candidate::at(bpm, c));
+            }
         }
     }
     best
@@ -298,6 +280,18 @@ struct Candidate {
     mean: f32,
     sd: f32,
     phase_frames: f32,
+}
+
+impl Candidate {
+    fn at(bpm: f32, c: CombScore) -> Self {
+        Candidate {
+            bpm,
+            score: c.score,
+            mean: c.mean,
+            sd: c.sd,
+            phase_frames: c.phase_frames,
+        }
+    }
 }
 
 /// Coarse candidates from the weighted autocorrelation, already folded, plus
@@ -381,7 +375,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     let scoring_env = smooth(&env.values, (SCORING_SMOOTH_SECS * fps).round() as usize);
     let mut scored: Vec<Candidate> = coarse
         .into_iter()
-        .map(|bpm| refine(&scoring_env, fps, bpm))
+        .filter_map(|bpm| refine(&scoring_env, fps, bpm))
         .filter(|c| c.score.is_finite())
         .collect();
     if scored.is_empty() {
@@ -393,16 +387,19 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // Rescore the finalists unsmoothed. Smoothing makes the search tractable
     // but lifts a wrong grid landing on quiet events toward the right one, so
     // the final comparison goes without it.
-    for c in scored.iter_mut() {
-        // Folded again: the precision pass runs after refine's window check
-        // and can walk a candidate back out. The rescore below runs on the
-        // folded tempo, so score and phase stay consistent with it.
-        c.bpm = fold_to_canonical(precision_pass(&env.values, fps, c.bpm));
-        let raw = comb_score(&env.values, fps, c.bpm);
-        c.score = raw.score;
-        c.mean = raw.mean;
-        c.sd = raw.sd;
-        c.phase_frames = raw.phase_frames;
+    // Folded again: the precision pass runs after refine's window check and can
+    // walk a candidate back out. The rescore runs on the folded tempo, so score
+    // and phase stay consistent with it. A candidate that is unscorable on the
+    // raw envelope is dropped rather than carried at a sentinel value.
+    let mut scored: Vec<Candidate> = scored
+        .into_iter()
+        .filter_map(|c| {
+            let bpm = fold_to_canonical(precision_pass(&env.values, fps, c.bpm));
+            comb_score(&env.values, fps, bpm).map(|raw| Candidate::at(bpm, raw))
+        })
+        .collect();
+    if scored.is_empty() {
+        return None;
     }
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
     for c in &scored {
@@ -430,18 +427,19 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
     // and a consumer analyzing downtempo material will want to overrule it.
-    alternates.push(Alternate {
-        value: f64::from(round2(best.bpm / 2.0)),
-        label: None,
-        relation: "half".into(),
-        score: round3(comb_score(&env.values, fps, best.bpm / 2.0).score),
-    });
-    alternates.push(Alternate {
-        value: f64::from(round2(best.bpm * 2.0)),
-        label: None,
-        relation: "double".into(),
-        score: round3(comb_score(&env.values, fps, best.bpm * 2.0).score),
-    });
+    for (bpm, relation) in [(best.bpm / 2.0, "half"), (best.bpm * 2.0, "double")] {
+        // Skipped rather than reported at a made-up score when the clip is too
+        // short to carry the grid: scores here are routinely negative, so any
+        // stand-in value reads as a real and mediocre reading.
+        if let Some(c) = comb_score(&env.values, fps, bpm) {
+            alternates.push(Alternate {
+                value: f64::from(round2(bpm)),
+                label: None,
+                relation: relation.into(),
+                score: round3(c.score),
+            });
+        }
+    }
     // The finalists converge from several seeds onto the same few tempos, so
     // report distinct readings rather than the same number three times.
     for c in scored.iter().skip(1) {
@@ -842,6 +840,29 @@ mod tests {
     }
 
     #[test]
+    fn an_unscorable_grid_never_outranks_a_scorable_one() {
+        // Scores are routinely negative on real material, so a zero sentinel
+        // for "could not score this" outranked every genuine reading. Only
+        // reachable on very short buffers today — which is exactly the
+        // live-capture case.
+        let fps = 100.0;
+        let env = vec![0.5f32; 60];
+        // Period under two frames, and period longer than the buffer.
+        assert!(comb_score(&env, fps, 4000.0).is_none());
+        assert!(comb_score(&env, fps, 50.0).is_none());
+
+        // And a real reading on weak material scores below zero, so the old
+        // sentinel outranked it.
+        let env = vec![0.5f32; 300];
+        let scorable = comb_score(&env, fps, 128.0).expect("scorable");
+        assert!(
+            scorable.score < 0.0,
+            "expected a negative score to sit under the old sentinel, got {}",
+            scorable.score
+        );
+    }
+
+    #[test]
     fn metric_relations_are_recognized() {
         assert!(metrically_related(174.0, 87.0));
         assert!(metrically_related(124.0, 124.0));
@@ -870,8 +891,8 @@ mod repro_tests {
             env[t as usize] = 1.0;
             t += period / 2.0;
         }
-        let truth = comb_score(&env, fps, bpm);
-        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0);
+        let truth = comb_score(&env, fps, bpm).expect("scorable");
+        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0).expect("scorable");
         assert!(
             truth.score > sparse.score,
             "true {} vs 2/3 {}",
@@ -903,9 +924,9 @@ mod repro_tests {
             *v -= 0.4;
         }
 
-        let truth = comb_score(&env, fps, bpm);
-        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0);
-        let unrelated = comb_score(&env, fps, 103.0);
+        let truth = comb_score(&env, fps, bpm).expect("scorable");
+        let sparse = comb_score(&env, fps, bpm * 2.0 / 3.0).expect("scorable");
+        let unrelated = comb_score(&env, fps, 103.0).expect("scorable");
         assert!(
             truth.score > sparse.score,
             "true {} vs 2/3 {}",
