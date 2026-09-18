@@ -345,7 +345,15 @@ fn candidates(env: &OnsetEnvelope) -> (Vec<f32>, Vec<f32>) {
 /// differently, so it is not a competing reading for confidence.
 fn metrically_related(a: f32, b: f32) -> bool {
     const RATIOS: [f32; 7] = [0.5, 2.0, 2.0 / 3.0, 3.0 / 2.0, 3.0 / 4.0, 4.0 / 3.0, 1.0];
-    RATIOS.iter().any(|r| (a / b - r).abs() < 0.03 * r.max(1.0))
+    // Compared in log space, where a tolerance means the same thing in both
+    // directions. The ratio set is closed under reciprocal, so this makes the
+    // relation symmetric; an absolute window on `a / b` does not, and made a
+    // tempo's own double read as an unrelated rival from one side only.
+    if a <= 0.0 || b <= 0.0 {
+        return false;
+    }
+    let d = (a / b).ln();
+    RATIOS.iter().any(|r| (d - r.ln()).abs() < 0.03)
 }
 
 /// What failing to explain all the onset energy costs, in envelope standard
@@ -805,6 +813,32 @@ mod tests {
                 est.bpm
             );
         }
+    }
+
+    #[test]
+    fn metric_relations_are_symmetric_across_the_window() {
+        // Asymmetry here does not change which tempo wins, only how sure the
+        // tool says it is: a winner near the bottom of the window whose double
+        // reads as unrelated gets its margin — and so its confidence — cut on
+        // an answer with no real competitor.
+        // A full grid, not exact multiples: on an exact ratio both the old
+        // form and this one agree, so a sweep of doubles and halves would pass
+        // against the bug. The disagreement lives just off the ratios.
+        let mut a = CANONICAL_LOW_BPM;
+        while a < CANONICAL_HIGH_BPM {
+            let mut b = SEARCH_MIN_BPM;
+            while b < 200.0 {
+                assert_eq!(
+                    metrically_related(a, b),
+                    metrically_related(b, a),
+                    "{a} vs {b}"
+                );
+                b += 0.5;
+            }
+            a += 0.5;
+        }
+        assert!(!metrically_related(174.0, 91.0));
+        assert!(!metrically_related(91.0, 174.0));
     }
 
     #[test]
