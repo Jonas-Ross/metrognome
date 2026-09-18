@@ -122,7 +122,32 @@ fn parse_key_profile(s: &str) -> Result<KeyProfile, String> {
 
 impl CommonOpts {
     fn analyzer(&self) -> Result<Analyzer> {
-        let analyzer = Analyzer::new(&self.config()?)?;
+        self.analyzer_with(self.config()?)
+    }
+
+    /// An analyzer that never reads or writes cached analyses.
+    ///
+    /// `validate` measures the algorithm, so a cached row measures nothing and
+    /// is indistinguishable from a real one in the output. That cost two live
+    /// runs: a DSP change shipped without bumping `ALGORITHM_VERSION`, the
+    /// cache answered every track, and the table came back byte-identical to
+    /// the run before it. Relying on the version bump alone leaves the same
+    /// trap armed for the next change; an accuracy check should not be able to
+    /// pass on stale data whatever anyone remembers to bump.
+    fn fresh_analyzer(&self) -> Result<Analyzer> {
+        self.analyzer_with(self.fresh_config()?)
+    }
+
+    /// [`Self::config`] with the analysis cache switched off.
+    fn fresh_config(&self) -> Result<AnalyzerConfig> {
+        Ok(AnalyzerConfig {
+            cache_path: None,
+            ..self.config()?
+        })
+    }
+
+    fn analyzer_with(&self, config: AnalyzerConfig) -> Result<Analyzer> {
+        let analyzer = Analyzer::new(&config)?;
         Ok(match &self.api_base_url {
             Some(url) => analyzer.with_base_url(url.clone()),
             None => analyzer,
@@ -201,7 +226,7 @@ async fn main() -> Result<()> {
         }
 
         Command::Validate { opts } => {
-            let analyzer = opts.analyzer()?;
+            let analyzer = opts.fresh_analyzer()?;
             let mut rows = Vec::new();
             for t in metrognome::validate::REFERENCE_TRACKS {
                 tracing::info!(artist = t.artist, title = t.title, "validating");
@@ -396,4 +421,44 @@ fn error_value(e: impl std::fmt::Display) -> serde_json::Value {
             "error": { "kind": "internal", "message": e.to_string() },
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn opts(args: &[&str]) -> CommonOpts {
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            opts: CommonOpts,
+        }
+        let mut argv = vec!["metrognome"];
+        argv.extend_from_slice(args);
+        Wrapper::parse_from(argv).opts
+    }
+
+    #[test]
+    fn validate_never_reads_a_cached_analysis() {
+        // `validate` measures the algorithm. A cached row measures nothing and
+        // looks identical in the table, which once made two live runs return
+        // byte-identical results after a real DSP change — the cache answered
+        // every track because ALGORITHM_VERSION had not been bumped. The
+        // guarantee lives here rather than in anyone's memory of that rule.
+        let o = opts(&[]);
+        assert!(
+            o.config().unwrap().cache_path.is_some(),
+            "analyze and batch should still cache"
+        );
+        assert!(
+            o.fresh_config().unwrap().cache_path.is_none(),
+            "validate must not read cached analyses"
+        );
+
+        // An explicit --cache-path does not re-enable it for validate either.
+        let o = opts(&["--cache-path", "/tmp/should-be-ignored.db"]);
+        assert!(o.config().unwrap().cache_path.is_some());
+        assert!(o.fresh_config().unwrap().cache_path.is_none());
+    }
 }

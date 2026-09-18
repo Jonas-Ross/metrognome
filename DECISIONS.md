@@ -444,3 +444,21 @@ triggers on a test fixture can still trigger on every real track.
 `scores_stay_ordered_on_an_envelope_with_uneven_beats` builds an envelope whose
 grid spread exceeds its mean and asserts the candidates stay distinct and
 correctly ordered. It fails against the clamped version.
+
+## 29. `validate` never reads the cache
+
+Two live runs came back byte-identical across a real DSP change. The scoring in
+entry 28 never executed: `ALGORITHM_VERSION` was bumped in the commit that
+introduced recall and not in the one that fixed it, so every track was answered
+from the on-disk cache, and a cached row is indistinguishable from a fresh one
+in the table.
+
+Bumping the version is the documented rule and it was still missed one commit
+after being followed correctly. So the fix is not only to bump it: `validate`
+now builds its analyzer with no cache at all. It measures the algorithm, so a
+cached row measures nothing, and an accuracy check that can pass on stale data
+is a check that will eventually pass on stale data. The cost is ten uncached
+lookups on a command that is already rate-limited and run by hand.
+
+`analyze` and `batch` are unchanged — for them the cache is the point, and a
+version bump is the correct and sufficient control.
