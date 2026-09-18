@@ -39,6 +39,12 @@ pub struct ReferenceTrack {
 /// Tempos are the commonly cited figures. Treat a 1-2 BPM disagreement as a
 /// disagreement between sources, not a bug; an octave or a metric ratio out is
 /// the thing this table exists to catch.
+///
+/// These figures are hand-entered and have been wrong at least once: Inner City
+/// Life sat here at 172 until a lookup put it at 155, which is what the
+/// estimator had been reporting. A row that disagrees is a question about which
+/// side is wrong, not proof that the estimator is. Entries marked unverified
+/// below have not been checked against a source outside this list.
 pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     ReferenceTrack {
         artist: "Robin S",
@@ -71,6 +77,7 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
     ReferenceTrack {
         artist: "The Chemical Brothers",
         title: "Hey Boy Hey Girl",
+        // Unverified: hand-entered, never checked against an outside source.
         expected_bpm: 130.0,
         expected_key: "",
         genre: "big beat / techno",
@@ -79,12 +86,16 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
         artist: "Darude",
         title: "Sandstorm",
         expected_bpm: 136.0,
-        expected_key: "B minor",
+        // The source gives a bare "B". Recording a mode it did not state would
+        // be inventing half the fact, and the tonic alone already catches the
+        // failure that matters: the estimator answered E, a fifth away.
+        expected_key: "B",
         genre: "trance",
     },
     ReferenceTrack {
         artist: "Underworld",
         title: "Born Slippy .NUXX",
+        // Unverified: hand-entered, never checked against an outside source.
         expected_bpm: 138.0,
         expected_key: "",
         genre: "techno",
@@ -97,9 +108,13 @@ pub const REFERENCE_TRACKS: &[ReferenceTrack] = &[
         genre: "drum & bass",
     },
     ReferenceTrack {
+        // 155, not the 172 this list first carried. A public database gives 155
+        // for both the album version and the radio edit, and the estimator had
+        // been reading 155 all along. The two versions disagree on key (G and
+        // A), so no key is claimed here.
         artist: "Goldie",
         title: "Inner City Life",
-        expected_bpm: 172.0,
+        expected_bpm: 155.0,
         expected_key: "",
         genre: "drum & bass",
     },
@@ -231,35 +246,60 @@ pub fn verdict(expected: f32, estimated: Option<f32>) -> Verdict {
 /// different key, and the reference figures come from sources that pick
 /// either one.
 pub fn key_matches(expected: &str, estimated: &str) -> bool {
-    fn canonical(s: &str) -> String {
-        let lower = s.trim().to_lowercase();
-        let (tonic, mode) = match lower.split_once(char::is_whitespace) {
-            Some((t, m)) => (t, m.trim()),
-            None => (lower.as_str(), ""),
-        };
-        let pc = match tonic {
-            "c" | "b#" => 0,
-            "c#" | "db" => 1,
-            "d" => 2,
-            "d#" | "eb" => 3,
-            "e" | "fb" => 4,
-            "f" | "e#" => 5,
-            "f#" | "gb" => 6,
-            "g" => 7,
-            "g#" | "ab" => 8,
-            "a" => 9,
-            "a#" | "bb" => 10,
-            "b" | "cb" => 11,
-            _ => return lower.clone(),
-        };
-        let mode = if mode.starts_with("min") {
-            "minor"
-        } else {
-            "major"
-        };
-        format!("{pc} {mode}")
+    let (Some((want_pc, want_minor)), Some((got_pc, got_minor))) =
+        (parse_key(expected), parse_key(estimated))
+    else {
+        return false;
+    };
+    if want_pc != got_pc {
+        return false;
     }
-    canonical(expected) == canonical(estimated)
+    match (want_minor, got_minor) {
+        // An expectation that names no mode is satisfied by either. Public
+        // tempo-and-key databases routinely publish a bare tonic, and recording
+        // "B major" when the source said "B" would be inventing half the fact.
+        (Some(want), Some(got)) => want == got,
+        _ => true,
+    }
+}
+
+/// Parse a key name into a pitch class and, when stated, its mode.
+///
+/// `Some((11, Some(true)))` is B minor, `Some((11, None))` is "B" with no mode
+/// given. Enharmonic spellings collapse: published sources pick either, and
+/// A# and Bb are the same key.
+fn parse_key(s: &str) -> Option<(u8, Option<bool>)> {
+    let lower = s.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let (tonic, rest) = match lower.split_once(char::is_whitespace) {
+        Some((t, m)) => (t, m.trim()),
+        None => (lower.as_str(), ""),
+    };
+    let pc = match tonic {
+        "c" | "b#" => 0,
+        "c#" | "db" => 1,
+        "d" => 2,
+        "d#" | "eb" => 3,
+        "e" | "fb" => 4,
+        "f" | "e#" => 5,
+        "f#" | "gb" => 6,
+        "g" => 7,
+        "g#" | "ab" => 8,
+        "a" => 9,
+        "a#" | "bb" => 10,
+        "b" | "cb" => 11,
+        _ => return None,
+    };
+    let mode = if rest.is_empty() {
+        None
+    } else if rest.starts_with("min") {
+        Some(true)
+    } else {
+        Some(false)
+    };
+    Some((pc, mode))
 }
 
 /// Build a row from features and an expectation.
@@ -572,6 +612,19 @@ mod tests {
             key: None,
         };
         assert!(render_diagnostics(&[row("x", "house", 128.0, "", &features)]).is_empty());
+    }
+
+    #[test]
+    fn a_tonic_without_a_mode_matches_either_mode() {
+        // Public databases publish a bare "B" for Sandstorm. That must accept
+        // B minor and B major, and still reject the fifth-away answer the
+        // estimator actually gave.
+        assert!(key_matches("B", "B minor"));
+        assert!(key_matches("B", "B major"));
+        assert!(!key_matches("B", "E minor"));
+        // A stated mode is still enforced in both directions.
+        assert!(!key_matches("B minor", "B major"));
+        assert!(key_matches("B minor", "B"));
     }
 
     #[test]

@@ -354,3 +354,31 @@ chord progressions (see entry 14), and a 30-second preview of a trance record is
 quite likely to be a breakdown that genuinely sits on the dominant. Telling
 those apart needs real key ground truth, which is why the reference set needs
 expected keys from a source that is not this estimator.
+
+## 26. The reference table was wrong before the estimator was
+
+Inner City Life sat in `REFERENCE_TRACKS` at 172 BPM. A lookup against a public
+database puts it at 155, for both the album version and the radio edit, which is
+what the estimator had been reporting all along with a confidence of 0.71. The
+row that looked like the second-worst failure in the table was the estimator
+being right and the list being wrong.
+
+This is why entry 24 refused to tune the scorer until the expected figures had
+independent backing. Tuning to close an 11% gap would have broken a correct
+answer to satisfy a number typed in from memory.
+
+Sandstorm went the other way: 136 confirmed, so its 90.71 was a real 2/3 scoring
+failure, and the metrical tie-break is aimed at a bug that exists.
+
+Consequences, all of them about provenance rather than DSP:
+
+- Inner City Life is now 155, with a comment saying where that came from.
+- Hey Boy Hey Girl (130) and Born Slippy .NUXX (138) are marked unverified,
+  because they are still hand-entered and one of their neighbours was wrong.
+- `key_matches` accepts an expectation that names a tonic with no mode. The
+  source for Sandstorm gives a bare "B"; recording "B minor" would invent half
+  the fact, and the tonic alone already catches what matters, which is that the
+  estimator answered E — a fifth away, the classic chroma confusion, at
+  confidence 1.00.
+- Inner City Life still carries no expected key, because the album version and
+  the radio edit are published in different keys and the store may serve either.
