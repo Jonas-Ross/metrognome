@@ -79,3 +79,7 @@ CI gates on fmt, clippy with warnings denied, and tests.
 - [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>`, imperative, lowercase, no trailing period.
 - One concern per commit. Keep the build green.
+- Work that depends on an unmerged PR is stacked, not held: branch off that PR's head and
+  open the follow-up against it, named per the convention above. After editing a lower
+  layer, rebase the upper layers onto it and republish with `--force-with-lease`; copying
+  fixes between branches does not maintain stack ancestry.
