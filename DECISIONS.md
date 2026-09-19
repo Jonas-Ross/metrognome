@@ -576,3 +576,82 @@ tracks. `ALGORITHM_VERSION` does not move, because no measurement changed.
 Deliberately not given a serde default. A cache row written before this field
 existed fails to parse and is treated as a miss, which costs one re-analysis; a
 default would have let a stale row assert a maturity nothing ever measured.
+
+## 34. Key confidence measures how determined the key is, not how well a profile fits
+
+Entries 31 to 33 kept circling the same embarrassment: Sandstorm reported a
+wrong key at confidence 1.00 while Born Slippy reported a right one at 0.65.
+That is not a close call going the wrong way, it is a confidence that ranks
+wrong answers above right ones, and a consumer that trusts it is worse off than
+one that ignores key entirely.
+
+Synthetic material reproduces it exactly, with no reference to argue about. Two
+fifths alternating with no third between them — E5 and B5, four bars — scored B
+major at confidence 1.00. A lead riff on three pitch classes scored E minor at
+1.00. A single sustained note scored A major at 0.68 and was not flagged
+uncertain. None of those clips contains enough information to name a key, and
+the estimator claimed certainty on all of them.
+
+Two causes, both in the scoring rather than in the chroma:
+
+The first is saturation. Confidence multiplied three factors, each a ratio
+clamped at 1.0, and every threshold sat where ordinary tonal material clears it
+comfortably: a correlation over 0.75, a lead over 0.10, a salience over 0.55.
+All 48 synthetic progressions pinned all three and scored exactly 1.000, so the
+top of the scale was not a rare peak but the default for anything tonal, with no
+headroom left to separate a good fit from a certain one.
+
+The second is the real defect. Pearson correlation is scale- and offset-
+invariant, which the salience term already accounts for, but it is also blind to
+how many pitch classes carry any energy at all. A key is seven pitch classes. A
+chroma with three peaks and nine near-empty bins correlates with a key profile
+as strongly as a full progression does, and the gap to the runner-up is just as
+wide — but it is a gap between two profiles that the evidence cannot separate,
+because the evidence for the difference was never in the clip. Salience makes
+this worse rather than better: it measures departure from flat, so a two-note
+riff scores 1.56 where a four-chord progression scores 1.00.
+
+So confidence now carries a fourth factor, the effective number of pitch classes
+carrying tonal energy, and the margin factor is measured relative to the
+winner's own correlation and saturates exponentially instead of clamping.
+
+The pedestal subtraction in that fourth factor is the part worth writing down.
+Percussion adds roughly equal energy to all twelve classes, so a raw effective
+count rises with the drums: the three-note riff measures 3.7 dry and 5.2 over a
+beat, which is above where a real progression sits, and the gate that was
+supposed to catch it would have passed it. Subtracting the level every class
+shares strips that pedestal and leaves the count stable across drum levels —
+3.6 to 4.5 for the riff, 6.2 to 6.4 for the progression. Without it the fix
+would have worked on a riff in isolation and failed on every real track, which
+all have drums.
+
+What this costs and what it buys, on synthetic material: all 24 keys are still
+recovered on both profile sets, none of the 48 is flagged uncertain, and their
+confidences now spread from 0.54 to 0.98 instead of all reading 1.000. The
+under-determined clips fall below the uncertain threshold — power chords to
+0.00-0.17, the three-note riff to 0.06-0.47, a drone to 0.00. A genuine
+relative-pair coin flip, C major and A minor triads alternating, drops to 0.14.
+
+The lowest clean scores are the honest ones. Ab minor's i-VI-VII-i is Abm, E,
+F# and Abm, and all four chords are diatonic to B major; the estimator gets it
+right only because the profile weights a repeated tonic. Reporting that at 0.54
+rather than 1.00 is the point of the change.
+
+`ALGORITHM_VERSION` goes to 7, since every cached key confidence is now
+incomparable. `SCHEMA_VERSION` stays at 2: no field appeared, moved, or changed
+what it promises. The numbers a consumer reads are better, which is what
+`ALGORITHM_VERSION` is for.
+
+Key stays provisional. This makes its confidence worth reading; it does not make
+the estimator validated, and entry 31 still needs a larger ground-truth set than
+three documented cases. Whether Sandstorm now reads B, or reads E minor with a
+confidence low enough to be discarded, is a question for `metrognome validate`
+on real audio — the sandbox cannot fetch previews. Either outcome is an
+improvement over asserting the wrong one at 1.00.
+
+One observation for selecta, not acted on here: in all 48 synthetic cases the
+runner-up is the relative major or a fifth-related neighbour, and a relative
+pair shares its Camelot number. A key confusion of that shape costs almost
+nothing on the wheel, so a low-confidence key may still carry a usable Camelot
+position. Acting on that would mean a separate confidence for the wheel
+position, which is not worth inventing until the ground-truth set exists.
