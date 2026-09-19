@@ -64,7 +64,7 @@ moving existing ones.
       "confidence": 0.79,
       "uncertain": false,
       "maturity": "provisional",
-      "source": "metrognome/chroma-correlation-edm@1",
+      "source": "metrognome/chroma-correlation-edm@2",
       "alternates": [
         { "value": 8.0, "label": "C major (8B)", "relation": "relative_major", "score": 0.681 }
       ]

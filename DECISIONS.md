@@ -642,6 +642,14 @@ incomparable. `SCHEMA_VERSION` stays at 2: no field appeared, moved, or changed
 what it promises. The numbers a consumer reads are better, which is what
 `ALGORITHM_VERSION` is for.
 
+Both key `source` strings go to `@2` for the same reason. That suffix versions
+the estimator that produced a value, and selecta stores it as per-field
+provenance — leaving it at `@1` would have let a stored confidence from before
+this change and one from after it claim the same origin. `ALGORITHM_VERSION`
+does not cover that: it invalidates metrognome's own cache, where `source`
+travels with the value into a consumer's database and outlives the run.
+`TEMPO_SOURCE` stays at `@1`, since tempo scoring did not move.
+
 Key stays provisional. This makes its confidence worth reading; it does not make
 the estimator validated, and entry 31 still needs a larger ground-truth set than
 three documented cases. Whether Sandstorm now reads B, or reads E minor with a

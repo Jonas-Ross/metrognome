@@ -46,8 +46,8 @@ impl KeyProfile {
 
     fn source(self) -> &'static str {
         match self {
-            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@1",
-            KeyProfile::Edm => "metrognome/chroma-correlation-edm@1",
+            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@2",
+            KeyProfile::Edm => "metrognome/chroma-correlation-edm@2",
         }
     }
 
