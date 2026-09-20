@@ -35,9 +35,14 @@ impl AnalysisOptions {
     /// key. Anything that changes the output must appear here, or a cache hit
     /// will serve an answer produced under different settings.
     pub fn cache_key(&self) -> String {
-        // Only what changes the estimate belongs here. `explain_key_scoring`
-        // adds a field without moving a number, so a cached row serves either.
-        format!("key_profile={:?}", self.key_profile).to_ascii_lowercase()
+        // The breakdown is part of the stored payload, not just a rendering of
+        // it, so a row cached without it cannot serve a caller that asked for
+        // it — nor the reverse.
+        format!(
+            "key_profile={:?},explain_key_scoring={}",
+            self.key_profile, self.explain_key_scoring
+        )
+        .to_ascii_lowercase()
     }
 }
 
@@ -391,15 +396,15 @@ mod tests {
     }
 
     #[test]
-    fn the_cache_key_ignores_what_only_adds_diagnostics() {
-        // Asking for the scoring breakdown attaches a field without moving a
-        // number, so a row cached either way is still a valid hit.
+    fn the_cache_key_separates_diagnostic_rows_from_plain_ones() {
+        // A hit serves its stored payload verbatim, so a row cached without the
+        // breakdown would answer a request for it with nothing.
         let plain = AnalysisOptions::default();
         let explained = AnalysisOptions {
             explain_key_scoring: true,
             ..Default::default()
         };
-        assert_eq!(plain.cache_key(), explained.cache_key());
+        assert_ne!(plain.cache_key(), explained.cache_key());
     }
 
     #[test]

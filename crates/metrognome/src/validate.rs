@@ -178,7 +178,9 @@ pub struct ValidationRow {
     pub key_confidence: Option<f32>,
     /// Whether the key estimate flags itself a hint. This is what a consumer
     /// branches on, so the table shows it rather than leaving it to be
-    /// inferred from the confidence.
+    /// inferred from the confidence. Absent when there is no key, which is
+    /// also how a run recorded before the field existed reads back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_uncertain: Option<bool>,
     /// The factors behind the key confidence, when diagnostics were asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -668,6 +670,24 @@ mod tests {
             relation: relation.to_string(),
             score,
         }
+    }
+
+    #[test]
+    fn a_row_saved_before_the_uncertain_flag_still_reads_back() {
+        let json = serde_json::json!({
+            "label": "x",
+            "genre": "house",
+            "expected_bpm": 128.0,
+            "estimated_bpm": 128.0,
+            "expected_key": "",
+            "estimated_key": null,
+            "camelot": null,
+            "tempo_confidence": 0.9,
+            "key_confidence": null,
+            "verdict": "ok",
+        });
+        let row: ValidationRow = serde_json::from_value(json).expect("older row");
+        assert_eq!(row.key_uncertain, None);
     }
 
     #[test]
