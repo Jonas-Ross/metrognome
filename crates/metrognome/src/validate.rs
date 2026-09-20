@@ -548,6 +548,40 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
     out
 }
 
+/// Render the key scoring factors for every row that produced a key.
+///
+/// Separate from [`render_diagnostics`], which is failures only: a key that
+/// scored low is not a failure — the reference set carries an expected key for
+/// only three tracks — yet why it scored low is the whole question.
+pub fn render_key_scoring(rows: &[ValidationRow]) -> String {
+    let mut out = String::new();
+    for r in rows {
+        let Some(k) = &r.key_scoring else {
+            continue;
+        };
+        out.push_str(&format!(
+            "{:<42} {:<10} conf {:.2} {:<9} corr {:.3} vs {:.3} | strength {:.2} margin {:.2} tonality {:.2} coverage {:.2} | sal {:.2} tpc {:.2}\n",
+            r.label,
+            r.estimated_key.as_deref().unwrap_or("none"),
+            r.key_confidence.unwrap_or(0.0),
+            match r.key_uncertain {
+                Some(true) => "DISCARDED",
+                Some(false) => "kept",
+                None => "",
+            },
+            k.correlation,
+            k.runner_up,
+            k.strength,
+            k.margin,
+            k.tonality,
+            k.coverage,
+            k.salience,
+            k.tonal_pitch_classes,
+        ));
+    }
+    out
+}
+
 /// One synthesized case: a signal with a known tempo and key.
 struct SelftestCase {
     label: String,
@@ -784,6 +818,35 @@ mod tests {
         assert!(d.contains("corr 0.908 vs runner-up 0.636"), "{d}");
         assert!(d.contains("coverage 1.00"), "{d}");
         assert!(d.contains("tonal pitch classes 6.20"), "{d}");
+    }
+
+    #[test]
+    fn key_scoring_is_reported_for_every_row_not_only_failures() {
+        // Seven of the ten reference tracks carry no expected key, so they
+        // always "pass" and never reach render_diagnostics — and they are
+        // exactly the rows whose low confidence needs explaining.
+        let mut passing = row("passes", "house", 128.0, "", &Features::default());
+        passing.verdict = Verdict::Ok;
+        passing.estimated_key = Some("F major".into());
+        passing.key_confidence = Some(0.08);
+        passing.key_uncertain = Some(true);
+        passing.key_scoring = Some(KeyScoring {
+            correlation: 0.780,
+            runner_up: 0.774,
+            salience: 0.8,
+            tonal_pitch_classes: 6.0,
+            strength: 1.0,
+            margin: 0.08,
+            tonality: 1.0,
+            coverage: 1.0,
+        });
+        assert!(passing.passed(), "row must pass, or this proves nothing");
+        assert!(render_diagnostics(&[passing.clone()]).is_empty());
+
+        let s = render_key_scoring(&[passing]);
+        assert!(s.contains("corr 0.780 vs 0.774"), "{s}");
+        assert!(s.contains("margin 0.08"), "{s}");
+        assert!(s.contains("DISCARDED"), "{s}");
     }
 
     #[test]

@@ -323,6 +323,13 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
             summary.key_agreed, summary.key_checked
         );
     }
+    // Every row that produced a key, failure or not: a low confidence on a
+    // track carrying no expected key is not a failure but is still the thing
+    // worth reading.
+    let scoring = metrognome::validate::render_key_scoring(rows);
+    if !scoring.is_empty() {
+        eprintln!("\nkey scoring\n{scoring}");
+    }
     // The table says which rows are wrong; this says what they were wrong
     // about. Failures only — a passing row needs no explaining.
     let diagnostics = metrognome::validate::render_diagnostics(rows);
