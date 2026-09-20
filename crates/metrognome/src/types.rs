@@ -142,6 +142,10 @@ pub struct KeyScoring {
     pub margin: f32,
     /// Whether the chroma has any structure to correlate against, 0-1. A floor
     /// against a flat chroma, not a measure of how tonal the material is.
+    ///
+    /// The alias reads back diagnostic output captured while this was called
+    /// `tonality`, which it was for as long as it measured how tonal a clip is.
+    #[serde(alias = "tonality")]
     pub structure: f32,
     /// Whether enough distinct pitch classes are present to choose, 0-1.
     pub coverage: f32,

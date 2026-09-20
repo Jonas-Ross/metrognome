@@ -826,6 +826,17 @@ mod tests {
     }
 
     #[test]
+    fn scoring_reads_back_under_the_name_the_factor_used_to_have() {
+        let json = serde_json::json!({
+            "correlation": 0.9, "runner_up": 0.6, "salience": 0.5,
+            "tonal_pitch_classes": 6.0, "strength": 1.0, "margin": 0.9,
+            "tonality": 0.8, "coverage": 1.0,
+        });
+        let s: KeyScoring = serde_json::from_value(json).expect("pre-rename scoring");
+        assert_eq!(s.structure, 0.8);
+    }
+
+    #[test]
     fn a_clip_too_short_to_average_names_no_key() {
         // Noise over a few frames has not been flattened yet, so the salience
         // floor does not catch it and a random chroma shape correlates as well
