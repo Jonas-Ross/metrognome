@@ -96,6 +96,10 @@ pub struct Chromagram {
     pub bins: [f32; 12],
     /// How many frames contributed. Zero means no usable audio.
     pub frames: usize,
+    /// Frames per second, so `frames` can be read as a duration. The chroma
+    /// window is rounded to a power of two, so this is not the same at every
+    /// sample rate: 21.5 at 44.1kHz, 11.7 at 48kHz.
+    pub frame_rate: f32,
 }
 
 impl Chromagram {
@@ -117,6 +121,15 @@ impl Chromagram {
             .sum::<f32>()
             / 12.0;
         var.sqrt() / mean
+    }
+
+    /// How much audio went into this chroma.
+    pub fn seconds(&self) -> f32 {
+        if self.frame_rate > 0.0 {
+            self.frames as f32 / self.frame_rate
+        } else {
+            0.0
+        }
     }
 
     /// Effective number of pitch classes carrying tonal energy.
@@ -178,6 +191,7 @@ pub fn chromagram(spec: &Spectrogram) -> Chromagram {
         return out;
     }
 
+    out.frame_rate = spec.fps;
     for t in 0..spec.frames {
         let row = spec.frame(t);
         let mut frame = [0.0f32; 12];
@@ -264,14 +278,15 @@ const STRUCTURE_FLOOR: f32 = 0.02;
 /// and a dense club mix 0.15, and both can state a key perfectly well.
 const STRUCTURE_SATURATION: f32 = 0.10;
 
-/// Chroma frames below which no key is named, however well a profile fits.
+/// Seconds of audio below which no key is named, however well a profile fits.
 ///
-/// Averaging is what flattens noise, so a chroma built from a handful of
-/// frames is not flat: over 399 random draws the worst confidence reaches 0.89
-/// at one frame and 0.75 at three, against 0.09 at thirty-two. The chroma
-/// window is sized in seconds, so this is about 1.5s at any sample rate, and a
-/// 30-second preview clears it six hundred times over.
-const MIN_CHROMA_FRAMES: usize = 32;
+/// Averaging is what flattens noise, so a short chroma is not flat: over 300
+/// random draws the worst confidence reaches 0.89 on a fifth of a second,
+/// against 0.09 at this length. Duration rather than a frame count because the
+/// chroma window rounds to a power of two, so the same frame count is 1.6s at
+/// 44.1kHz and 3.0s at 48kHz — and measured by seconds the two rates agree,
+/// which by frames they do not.
+const MIN_CHROMA_SECS: f32 = 1.5;
 
 /// Tonal pitch classes below which a chroma cannot name a key at all.
 ///
@@ -322,7 +337,7 @@ pub fn estimate_key_scored(
     chroma: &Chromagram,
     profile: KeyProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
-    if chroma.frames < MIN_CHROMA_FRAMES {
+    if chroma.seconds() < MIN_CHROMA_SECS {
         return None;
     }
     let (major, minor) = profile.profiles();
@@ -838,21 +853,49 @@ mod tests {
 
     #[test]
     fn a_clip_too_short_to_average_names_no_key() {
-        // Noise over a few frames has not been flattened yet, so the salience
+        // Noise over a short chroma has not been flattened yet, so the salience
         // floor does not catch it and a random chroma shape correlates as well
-        // as anything. Confidence reached 0.89 on one frame before this guard.
-        let stft = Stft::for_chroma(SR);
-        for frames in [1usize, 2, 3, 8, MIN_CHROMA_FRAMES - 1] {
-            let samples = 8192 + (frames - 1) * 2048;
-            for seed in 1..40u32 {
-                let mut g = testsig::Noise::new(seed);
-                let sig: Vec<f32> = (0..samples).map(|_| g.next_sample() * 0.3).collect();
-                let chroma = chromagram(&stft.magnitudes(&sig, SR));
-                assert!(
-                    estimate_key_scored(&chroma, KeyProfile::Edm).is_none(),
-                    "{frames} frames, seed {seed} produced a key"
-                );
+        // as anything. Confidence reached 0.89 on a fifth of a second.
+        //
+        // Both rates, because the chroma window rounds to a power of two: the
+        // cutoff is 33 frames at 44.1kHz and 18 at 48kHz, and a frame count
+        // would have made it 1.6s at one and 3.0s at the other.
+        for sr in [44_100u32, 48_000] {
+            let stft = Stft::for_chroma(sr);
+            for secs in [0.2f32, 0.5, 1.0, MIN_CHROMA_SECS - 0.1] {
+                for seed in 1..25u32 {
+                    let mut g = testsig::Noise::new(seed);
+                    let sig: Vec<f32> = (0..(sr as f32 * secs) as usize)
+                        .map(|_| g.next_sample() * 0.3)
+                        .collect();
+                    let chroma = chromagram(&stft.magnitudes(&sig, sr));
+                    assert!(
+                        estimate_key_scored(&chroma, KeyProfile::Edm).is_none(),
+                        "{sr}Hz, {secs}s, seed {seed} produced a key"
+                    );
+                }
             }
+        }
+    }
+
+    #[test]
+    fn the_short_clip_cutoff_is_the_same_duration_at_every_sample_rate() {
+        // The regression this guards: a fixed frame count meant 1.6s at
+        // 44.1kHz and 3.0s at 48kHz, so the same clip produced a key at one
+        // rate and nothing at the other.
+        for sr in [44_100u32, 48_000] {
+            let stft = Stft::for_chroma(sr);
+            let long = testsig::chord_progression(9, Quality::Minor, 2.0, sr);
+            let chroma = chromagram(&stft.magnitudes(&long, sr));
+            assert!(
+                chroma.seconds() >= MIN_CHROMA_SECS,
+                "{sr}Hz: 2s of audio measured {}s",
+                chroma.seconds()
+            );
+            assert!(
+                estimate_key_scored(&chroma, KeyProfile::Edm).is_some(),
+                "{sr}Hz: two seconds of a clean progression produced no key"
+            );
         }
     }
 

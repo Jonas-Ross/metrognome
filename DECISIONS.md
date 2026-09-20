@@ -749,11 +749,19 @@ wheel, so the practical cost is one step.
 Lowering the salience floor exposed something the old one hid by accident.
 Averaging is what flattens noise, so a chroma built from a handful of frames is
 not flat, and the 0.15 floor had been rejecting that case for the wrong reason.
-Over 399 random draws the worst confidence reaches 0.89 at one frame and 0.75
-at three, against 0.09 at thirty-two — so key estimation now declines below
-thirty-two frames, about 1.5 seconds. Duration is the honest gate there: no
-threshold on a statistic computed from one frame can tell a real chroma from a
-lucky one.
+Over 300 random draws the worst confidence reaches 0.89 on a fifth of a second
+against 0.09 at a second and a half, so key estimation now declines below 1.5
+seconds. Duration is the honest gate there: no threshold on a statistic
+computed from one frame can tell a real chroma from a lucky one.
+
+Seconds rather than frames, which was the first attempt. `Stft::for_chroma`
+rounds its window to a power of two, so the frame rate is 21.5/s at 44.1kHz but
+11.7/s at 48kHz, and a fixed frame count means 1.6 seconds at one rate and 3.0
+at the other — the same clip naming a key or not depending on how it was
+sampled. Measured by seconds the two rates also agree on the risk (0.09 and
+0.09 at the cutoff); measured by frames they differ by two to four times, since
+a 48kHz frame averages twice as many FFT bins into each pitch class. Duration
+is both the consistent gate and the fair one.
 
 Key stays provisional, and the ground-truth set entry 31 asked for still does
 not exist — thirty-one tracks measured the gates, not the answers.
