@@ -632,6 +632,23 @@ under-determined clips fall below the uncertain threshold — power chords to
 0.00-0.17, the three-note riff to 0.06-0.47, a drone to 0.00. A genuine
 relative-pair coin flip, C major and A minor triads alternating, drops to 0.14.
 
+One consequence of the relative margin, caught in review and worth recording:
+dividing the lead by the winner's own correlation turns a small absolute gap
+into a large relative one when every profile fits badly. Symmetric harmony makes
+this concrete — whole-tone chords and a diminished-seventh stack divide the
+octave evenly, so they sit far from every profile while still being loud, varied
+and spread across the chroma, clearing the salience and coverage gates on their
+own. Whole-tone chords correlate at 0.247 and led by 29% of that, which read as
+0.54 and shipped as a confident Bb major; the diminished stack read 0.58, and
+had done so before this change too.
+
+The correlation term is the only thing standing between that material and a
+confident answer, and it was softened by a square root. Removing the root fixes
+every such case (0.31 and 0.39) and changes nothing on real material, since the
+term clamps to 1.0 for any winner above the saturation and every clean key
+correlates above 0.85. A root on the factor that measures whether anything fits
+at all was simply the wrong shape.
+
 The lowest clean scores are the honest ones. Ab minor's i-VI-VII-i is Abm, E,
 F# and Abm, and all four chords are diatonic to B major; the estimator gets it
 right only because the profile weights a repeated tonic. Reporting that at 0.54

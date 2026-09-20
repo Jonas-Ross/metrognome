@@ -307,6 +307,10 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
         return None;
     }
 
+    // Linear rather than softened by a root: a weak best fit is exactly where
+    // the relative margin below turns a small absolute lead into a large one,
+    // so this is the term that has to bite. Above the saturation it clamps to
+    // 1.0, so real material is unaffected either way.
     let strength = (r1 / KEY_CORRELATION_SATURATION).clamp(0.0, 1.0);
     // Relative to the winner, so a lead of 0.05 over a correlation of 0.95
     // counts for less than the same lead over 0.30.
@@ -323,8 +327,7 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
     // relative minor is a coin flip, a clear winner among weak correlations is
     // noise, and a clear winner over three pitch classes is a riff several keys
     // would claim.
-    let confidence =
-        crate::types::normalize_confidence(strength.sqrt() * margin * tonality * coverage);
+    let confidence = crate::types::normalize_confidence(strength * margin * tonality * coverage);
 
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
@@ -559,6 +562,35 @@ mod tests {
             let est = key_of(&sig, KeyProfile::Edm).expect("key");
             assert_eq!(est.confidence, 0.0, "{name}: {est:?}");
             assert!(est.uncertain, "{name}: {est:?}");
+        }
+    }
+
+    #[test]
+    fn material_that_fits_no_key_well_is_not_confident() {
+        // Symmetric harmony divides the octave evenly, so it sits far from
+        // every profile while still being loud, varied and spread across the
+        // chroma — it clears the salience and coverage gates on its own. Only
+        // the correlation term stands between it and a confident answer.
+        let wt1: [f32; 3] = [60.0, 64.0, 68.0];
+        let wt2: [f32; 3] = [62.0, 66.0, 70.0];
+        let dim1: [f32; 4] = [60.0, 63.0, 66.0, 69.0];
+        let dim2: [f32; 4] = [61.0, 64.0, 67.0, 70.0];
+        for (name, sig) in [
+            (
+                "whole-tone chords",
+                testsig::note_sequence(&[&wt1, &wt2, &wt1, &wt2], 12.0, SR),
+            ),
+            (
+                "diminished sevenths",
+                testsig::note_sequence(&[&dim1, &dim2, &dim1, &dim2], 12.0, SR),
+            ),
+        ] {
+            let est = key_of(&sig, KeyProfile::Edm).expect("key");
+            assert!(
+                est.uncertain,
+                "{name} read as a confident {} at {}",
+                est.key, est.confidence
+            );
         }
     }
 
