@@ -96,10 +96,12 @@ pub struct Chromagram {
     pub bins: [f32; 12],
     /// How many frames contributed. Zero means no usable audio.
     pub frames: usize,
-    /// Frames per second, so `frames` can be read as a duration. The chroma
-    /// window is rounded to a power of two, so this is not the same at every
-    /// sample rate: 21.5 at 44.1kHz, 11.7 at 48kHz.
-    pub frame_rate: f32,
+    /// How much audio this chroma covers, window included.
+    ///
+    /// Not derivable from `frames`: the chroma window rounds to a power of
+    /// two, so both its length and the hop between frames differ by sample
+    /// rate, and the first frame costs a whole window rather than a hop.
+    pub seconds: f32,
 }
 
 impl Chromagram {
@@ -121,15 +123,6 @@ impl Chromagram {
             .sum::<f32>()
             / 12.0;
         var.sqrt() / mean
-    }
-
-    /// How much audio went into this chroma.
-    pub fn seconds(&self) -> f32 {
-        if self.frame_rate > 0.0 {
-            self.frames as f32 / self.frame_rate
-        } else {
-            0.0
-        }
     }
 
     /// Effective number of pitch classes carrying tonal energy.
@@ -191,7 +184,6 @@ pub fn chromagram(spec: &Spectrogram) -> Chromagram {
         return out;
     }
 
-    out.frame_rate = spec.fps;
     for t in 0..spec.frames {
         let row = spec.frame(t);
         let mut frame = [0.0f32; 12];
@@ -212,6 +204,11 @@ pub fn chromagram(spec: &Spectrogram) -> Chromagram {
             *acc += v / total;
         }
         out.frames += 1;
+    }
+    if out.frames > 0 && spec.fps > 0.0 {
+        // One whole window, then a hop for each frame after the first.
+        out.seconds =
+            spec.n_fft as f32 / spec.sample_rate as f32 + (out.frames - 1) as f32 / spec.fps;
     }
     out
 }
@@ -337,7 +334,7 @@ pub fn estimate_key_scored(
     chroma: &Chromagram,
     profile: KeyProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
-    if chroma.seconds() < MIN_CHROMA_SECS {
+    if chroma.seconds < MIN_CHROMA_SECS {
         return None;
     }
     let (major, minor) = profile.profiles();
@@ -880,22 +877,26 @@ mod tests {
 
     #[test]
     fn the_short_clip_cutoff_is_the_same_duration_at_every_sample_rate() {
-        // The regression this guards: a fixed frame count meant 1.6s at
-        // 44.1kHz and 3.0s at 48kHz, so the same clip produced a key at one
-        // rate and nothing at the other.
-        for sr in [44_100u32, 48_000] {
+        // The regression this guards: the chroma window rounds to a power of
+        // two, so both it and the hop change with the sample rate. A frame
+        // count put the cutoff at 1.6s against 3.0s, and counting hops without
+        // the window still put it at 1.67s against 1.79s — either way the same
+        // clip named a key at one rate and nothing at the other. The rates
+        // below straddle both rounding steps.
+        for sr in [22_050u32, 44_100, 48_000, 88_200, 96_000] {
             let stft = Stft::for_chroma(sr);
-            let long = testsig::chord_progression(9, Quality::Minor, 2.0, sr);
-            let chroma = chromagram(&stft.magnitudes(&long, sr));
-            assert!(
-                chroma.seconds() >= MIN_CHROMA_SECS,
-                "{sr}Hz: 2s of audio measured {}s",
-                chroma.seconds()
-            );
-            assert!(
-                estimate_key_scored(&chroma, KeyProfile::Edm).is_some(),
-                "{sr}Hz: two seconds of a clean progression produced no key"
-            );
+            let key_of = |secs: f32| {
+                let sig = testsig::chord_progression(9, Quality::Minor, secs, sr);
+                let chroma = chromagram(&stft.magnitudes(&sig, sr));
+                (
+                    estimate_key_scored(&chroma, KeyProfile::Edm).is_some(),
+                    chroma.seconds,
+                )
+            };
+            let (short, short_secs) = key_of(MIN_CHROMA_SECS - 0.1);
+            assert!(!short, "{sr}Hz: named a key from {short_secs}s of chroma");
+            let (long, long_secs) = key_of(MIN_CHROMA_SECS + 0.1);
+            assert!(long, "{sr}Hz: named no key from {long_secs}s of chroma");
         }
     }
 

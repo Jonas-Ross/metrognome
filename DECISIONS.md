@@ -754,14 +754,19 @@ against 0.09 at a second and a half, so key estimation now declines below 1.5
 seconds. Duration is the honest gate there: no threshold on a statistic
 computed from one frame can tell a real chroma from a lucky one.
 
-Seconds rather than frames, which was the first attempt. `Stft::for_chroma`
-rounds its window to a power of two, so the frame rate is 21.5/s at 44.1kHz but
-11.7/s at 48kHz, and a fixed frame count means 1.6 seconds at one rate and 3.0
-at the other — the same clip naming a key or not depending on how it was
-sampled. Measured by seconds the two rates also agree on the risk (0.09 and
-0.09 at the cutoff); measured by frames they differ by two to four times, since
-a 48kHz frame averages twice as many FFT bins into each pitch class. Duration
-is both the consistent gate and the fair one.
+Seconds rather than frames, and the duration counted properly, which took two
+attempts. `Stft::for_chroma` rounds its window to a power of two, so the frame
+rate is 21.5/s at 44.1kHz but 11.7/s at 48kHz: a fixed frame count put the
+cutoff at 1.6 seconds against 3.0, and counting hops alone still put it at 1.67
+against 1.79, because the first frame costs a whole window rather than a hop
+and that window is twice as long at 48kHz. The chroma now records the audio it
+covers, window included, and the cutoff lands within 1.533-1.536s at 22.05,
+44.1, 48, 88.2 and 96kHz.
+
+Measured by seconds the rates also agree on the risk being guarded against
+(0.09 at both at the cutoff); measured by frames they differ by two to four
+times, since a 48kHz frame averages twice as many FFT bins into each pitch
+class. Duration is both the consistent gate and the fair one.
 
 Key stays provisional, and the ground-truth set entry 31 asked for still does
 not exist — thirty-one tracks measured the gates, not the answers.
