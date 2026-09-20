@@ -111,6 +111,38 @@ pub struct KeyEstimate {
     pub source: String,
     /// Other plausible keys, best first.
     pub alternates: Vec<Alternate>,
+    /// How `confidence` was arrived at, factor by factor.
+    ///
+    /// Absent unless diagnostics were asked for, so the payload a consumer
+    /// sees does not carry the estimator's internals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<KeyScoring>,
+}
+
+/// The factors behind a key confidence, for diagnosing a surprising estimate.
+///
+/// `confidence` is their product, so a low one is explained by whichever term
+/// is small: the profiles fit nothing (`strength`), two keys tie (`margin`),
+/// the clip is percussive (`tonality`), or it states too few pitch classes
+/// (`coverage`). Diagnostic only — nothing in the contract depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct KeyScoring {
+    /// Correlation of the winning profile.
+    pub correlation: f32,
+    /// Correlation of the runner-up.
+    pub runner_up: f32,
+    /// Chroma salience, before the tonality floor is applied.
+    pub salience: f32,
+    /// Effective count of pitch classes carrying tonal energy.
+    pub tonal_pitch_classes: f32,
+    /// How well the winner fits, 0-1.
+    pub strength: f32,
+    /// How far ahead of the runner-up it is, 0-1.
+    pub margin: f32,
+    /// How tonal the clip is at all, 0-1.
+    pub tonality: f32,
+    /// Whether enough distinct pitch classes are present to choose, 0-1.
+    pub coverage: f32,
 }
 
 /// The store track a query resolved to.

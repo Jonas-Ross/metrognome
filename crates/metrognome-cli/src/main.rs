@@ -133,11 +133,20 @@ impl CommonOpts {
         self.analyzer_with(self.fresh_config()?)
     }
 
-    /// [`Self::config`] with the analysis cache switched off.
+    /// [`Self::config`] with the analysis cache switched off and the key
+    /// scoring breakdown switched on.
+    ///
+    /// Only the diagnostic commands take this path, which is exactly where the
+    /// breakdown is wanted and where a cache would hide it.
     fn fresh_config(&self) -> Result<AnalyzerConfig> {
+        let config = self.config()?;
         Ok(AnalyzerConfig {
             cache_path: None,
-            ..self.config()?
+            analysis: AnalysisOptions {
+                explain_key_scoring: true,
+                ..config.analysis
+            },
+            ..config
         })
     }
 
@@ -163,6 +172,7 @@ impl CommonOpts {
             burst: self.burst,
             analysis: AnalysisOptions {
                 key_profile: self.key_profile,
+                explain_key_scoring: false,
             },
             cache_path,
         })
@@ -258,8 +268,13 @@ async fn main() -> Result<()> {
             sample_rate,
             key_profile,
         } => {
-            let rows =
-                metrognome::validate::selftest(sample_rate, &AnalysisOptions { key_profile });
+            let rows = metrognome::validate::selftest(
+                sample_rate,
+                &AnalysisOptions {
+                    key_profile,
+                    explain_key_scoring: true,
+                },
+            );
             report(&rows)?;
         }
 

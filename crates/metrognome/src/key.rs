@@ -5,7 +5,7 @@
 //! DJ-adjacent tool and Camelot is what harmonic mixing actually uses.
 
 use crate::dsp::{Spectrogram, CHROMA_FMAX, CHROMA_FMIN};
-use crate::types::{Alternate, KeyEstimate, Maturity, UNCERTAIN_AT_OR_BELOW};
+use crate::types::{Alternate, KeyEstimate, KeyScoring, Maturity, UNCERTAIN_AT_OR_BELOW};
 
 /// Published key data contradicts itself, so there is no reference to measure
 /// key against. Synthetic material rules out a rotation error and nothing more.
@@ -283,6 +283,17 @@ fn relation(tonic: usize, minor: bool, other_tonic: usize, other_minor: bool) ->
 /// Returns `None` when there is no tonal content to work with at all, rather
 /// than naming a key nothing supports.
 pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstimate> {
+    estimate_key_scored(chroma, profile).map(|(est, _)| est)
+}
+
+/// As [`estimate_key`], also returning the factors behind the confidence.
+///
+/// The diagnostic commands use this; the analysis path attaches it only when
+/// asked, so a normal payload stays free of the estimator's internals.
+pub fn estimate_key_scored(
+    chroma: &Chromagram,
+    profile: KeyProfile,
+) -> Option<(KeyEstimate, KeyScoring)> {
     if chroma.frames == 0 {
         return None;
     }
@@ -318,9 +329,11 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
     // Gates on the chroma itself: below the salience floor there is nothing
     // tonal to have an opinion about, and below the coverage floor not enough
     // of it to choose a key from, however well the profiles happen to fit.
-    let tonality = ((chroma.salience() - TONALITY_FLOOR) / (TONALITY_SATURATION - TONALITY_FLOOR))
-        .clamp(0.0, 1.0);
-    let coverage = ((chroma.tonal_pitch_classes() - COVERAGE_FLOOR)
+    let salience = chroma.salience();
+    let tonal_pitch_classes = chroma.tonal_pitch_classes();
+    let tonality =
+        ((salience - TONALITY_FLOOR) / (TONALITY_SATURATION - TONALITY_FLOOR)).clamp(0.0, 1.0);
+    let coverage = ((tonal_pitch_classes - COVERAGE_FLOOR)
         / (COVERAGE_SATURATION - COVERAGE_FLOOR))
         .clamp(0.0, 1.0);
     // No factor substitutes for another: a correlation that ties with the
@@ -347,17 +360,32 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
         })
         .collect();
 
-    Some(KeyEstimate {
-        key: format!("{} {mode}", PITCH_NAMES[tonic]),
-        tonic: PITCH_NAMES[tonic].to_string(),
-        mode: mode.to_string(),
-        camelot: camelot(tonic, is_minor),
-        confidence,
-        uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
-        maturity: KEY_MATURITY,
-        source: profile.source().to_string(),
-        alternates,
-    })
+    let scoring = KeyScoring {
+        correlation: r1,
+        runner_up: r2,
+        salience,
+        tonal_pitch_classes,
+        strength,
+        margin,
+        tonality,
+        coverage,
+    };
+
+    Some((
+        KeyEstimate {
+            key: format!("{} {mode}", PITCH_NAMES[tonic]),
+            tonic: PITCH_NAMES[tonic].to_string(),
+            mode: mode.to_string(),
+            camelot: camelot(tonic, is_minor),
+            confidence,
+            uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
+            maturity: KEY_MATURITY,
+            source: profile.source().to_string(),
+            alternates,
+            scoring: None,
+        },
+        scoring,
+    ))
 }
 
 #[cfg(test)]
