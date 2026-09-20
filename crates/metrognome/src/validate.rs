@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{analyze_pcm_with, AnalysisOptions};
 use crate::testsig::{self, Groove, Quality};
-use crate::types::{Alternate, AudioInfo, Features, KeyScoring, TrackMatch};
+use crate::types::{
+    Alternate, AudioInfo, Features, KeyScoring, TempoConfidenceFactors, TrackMatch,
+};
 
 /// One track with a documented tempo.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -132,6 +134,10 @@ pub struct Summary {
     pub key_checked: usize,
     /// Of those, how many agreed.
     pub key_agreed: usize,
+    /// Rows whose tempo landed but is flagged uncertain, so a consumer
+    /// discards it. A correct answer nobody keeps is a calibration failure,
+    /// and the accuracy count alone hides it.
+    pub tempo_discarded: usize,
 }
 
 impl Summary {
@@ -142,6 +148,10 @@ impl Summary {
             tempo_ok: rows.iter().filter(|r| r.tempo_ok()).count(),
             key_checked: rows.iter().filter(|r| r.key_ok.is_some()).count(),
             key_agreed: rows.iter().filter(|r| r.key_ok == Some(true)).count(),
+            tempo_discarded: rows
+                .iter()
+                .filter(|r| r.tempo_ok() && r.tempo_uncertain == Some(true))
+                .count(),
         }
     }
 
@@ -174,6 +184,10 @@ pub struct ValidationRow {
     pub camelot: Option<String>,
     /// Tempo confidence.
     pub tempo_confidence: Option<f32>,
+    /// Whether the tempo estimate flagged itself uncertain. This, not the
+    /// confidence, is what a consumer acts on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tempo_uncertain: Option<bool>,
     /// Key confidence.
     pub key_confidence: Option<f32>,
     /// Whether the key estimate flags itself a hint. This is what a consumer
@@ -227,6 +241,10 @@ pub struct MatchedTrack {
     /// the dominant, or to a key sharing no notes are three different failures.
     #[serde(default)]
     pub key_alternates: Vec<Alternate>,
+    /// What produced the tempo confidence. The alternates carry every loser's
+    /// score and never the winner's, so a confidence is otherwise unattributable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tempo_confidence_factors: Option<TempoConfidenceFactors>,
 }
 
 impl MatchedTrack {
@@ -242,6 +260,10 @@ impl MatchedTrack {
             silent_fraction: audio.silent_fraction,
             tempo_alternates: alternates(features.tempo.as_ref().map(|t| &t.alternates)),
             key_alternates: alternates(features.key.as_ref().map(|k| &k.alternates)),
+            tempo_confidence_factors: features
+                .tempo
+                .as_ref()
+                .map(|t| t.confidence_factors.clone()),
         }
     }
 }
@@ -381,6 +403,7 @@ pub fn row(
         estimated_key: features.key.as_ref().map(|k| k.key.clone()),
         camelot: features.key.as_ref().map(|k| k.camelot.clone()),
         tempo_confidence: features.tempo.as_ref().map(|t| t.confidence),
+        tempo_uncertain: features.tempo.as_ref().map(|t| t.uncertain),
         key_confidence: features.key.as_ref().map(|k| k.confidence),
         key_uncertain: features.key.as_ref().map(|k| k.uncertain),
         key_scoring: features.key.as_ref().and_then(|k| k.scoring),
@@ -436,7 +459,13 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
             r.expected_bpm,
             or_dash(r.estimated_bpm),
             verdict,
-            or_dash(r.tempo_confidence),
+            // Bolded when the consumer will discard it, so a correct tempo
+            // nobody keeps is as visible as a wrong one.
+            if r.tempo_uncertain == Some(true) {
+                format!("**{}**", or_dash(r.tempo_confidence))
+            } else {
+                or_dash(r.tempo_confidence)
+            },
             if r.expected_key.is_empty() {
                 DASH
             } else {
@@ -479,7 +508,13 @@ fn describe_alternates(alts: &[Alternate]) -> String {
 /// resolution bug from a beatless clip from a genuine scoring miss.
 pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
     let mut out = String::new();
-    for r in rows.iter().filter(|r| !r.passed()) {
+    // A row whose tempo landed but is flagged uncertain gets a block too: the
+    // consumer discards it, so it is a failure of the same run even though the
+    // accuracy count counts it as a hit.
+    for r in rows
+        .iter()
+        .filter(|r| !r.passed() || r.tempo_uncertain == Some(true))
+    {
         out.push_str(&format!("{}\n", r.label));
         if let Some(e) = &r.error {
             out.push_str(&format!("    failed: {e}\n"));
@@ -512,6 +547,32 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
                 "    expected {:.0} was {} the alternates\n",
                 r.expected_bpm,
                 if near { "AMONG" } else { "not among" }
+            ));
+        }
+        if let Some(f) = &m.tempo_confidence_factors {
+            out.push_str(&format!(
+                "    tempo: {} conf {:.2}{} | clarity {:.3} evenness {:.3} margin {:.3} periodic {:.3} coverage {:.3}\n",
+                or_dash(r.estimated_bpm),
+                r.tempo_confidence.unwrap_or(0.0),
+                if r.tempo_uncertain == Some(true) {
+                    "  <- DISCARDED by a consumer"
+                } else {
+                    ""
+                },
+                f.clarity,
+                f.evenness,
+                f.margin,
+                f.periodic,
+                f.coverage
+            ));
+            out.push_str(&format!(
+                "           beat mean {:.3} sd {:.3}, gap over best rival {}, acf {:.3}, beats {:.0}\n",
+                f.beat_mean,
+                f.beat_sd,
+                f.rival_gap
+                    .map_or_else(|| "none".to_string(), |g| format!("{g:.3}")),
+                f.periodicity,
+                f.observed_beats
             ));
         }
         if !m.key_alternates.is_empty() {
@@ -752,6 +813,7 @@ mod tests {
                 alt(77.5, None, "half", 0.4),
             ],
             key_alternates: vec![alt(9.0, Some("G major (9B)"), "relative_major", 0.71)],
+            tempo_confidence_factors: None,
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("Inner City Life (Radio Edit)"), "{d}");
@@ -771,6 +833,7 @@ mod tests {
             silent_fraction: 0.01,
             tempo_alternates: vec![alt(174.0, None, "double", 0.9)],
             key_alternates: Vec::new(),
+            tempo_confidence_factors: None,
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("AMONG the alternates"), "{d}");
@@ -797,12 +860,85 @@ mod tests {
                 alt(10.0, Some("B minor (10A)"), "dominant", 0.612),
                 alt(9.0, Some("G major (9B)"), "relative_major", 0.604),
             ],
+            tempo_confidence_factors: None,
         });
         let d = render_diagnostics(&[r]);
         // The whole point: a confident wrong answer whose runner-up is a
         // hundredth behind is a different bug from one that wins by a mile.
         assert!(d.contains("key: E minor conf 1.00"), "{d}");
         assert!(d.contains("B minor (10A) dominant score 0.612"), "{d}");
+    }
+
+    #[test]
+    fn a_correct_tempo_the_consumer_discards_is_reported() {
+        // The gap this closes: every reference tempo landed, so no row failed
+        // and diagnostics printed nothing, while two of the ten were being
+        // discarded downstream.
+        let mut r = ValidationRow {
+            tempo_uncertain: Some(true),
+            tempo_confidence: Some(0.09),
+            ..row(
+                "Brown Paper Bag",
+                "drum & bass",
+                170.0,
+                "",
+                &Features::default(),
+            )
+        };
+        r.estimated_bpm = Some(170.03);
+        r.verdict = verdict(170.0, r.estimated_bpm);
+        r.matched = Some(MatchedTrack {
+            artist: "Roni Size".into(),
+            title: "Brown Paper Bag".into(),
+            match_score: 0.96,
+            uncertain: false,
+            preview_secs: 30.0,
+            silent_fraction: 0.005,
+            tempo_alternates: vec![alt(97.22, None, "runner_up", -3.338)],
+            key_alternates: Vec::new(),
+            tempo_confidence_factors: Some(TempoConfidenceFactors {
+                clarity: 0.012,
+                evenness: 0.78,
+                margin: 0.84,
+                periodic: 1.0,
+                coverage: 1.0,
+                beat_mean: 0.03,
+                beat_sd: 0.008,
+                rival_gap: Some(0.84),
+                periodicity: 0.91,
+                observed_beats: 85.0,
+            }),
+        });
+
+        assert!(r.tempo_ok(), "the tempo is right");
+        assert!(r.passed(), "so nothing about it failed");
+        assert_eq!(
+            Summary::of(std::slice::from_ref(&r)).tempo_discarded,
+            1,
+            "a right answer nobody keeps has to be counted"
+        );
+
+        let d = render_diagnostics(std::slice::from_ref(&r));
+        assert!(d.contains("DISCARDED"), "{d}");
+        // The factors are the point: the confidence alone cannot be attributed.
+        assert!(d.contains("clarity 0.012"), "{d}");
+        assert!(d.contains("gap over best rival 0.840"), "{d}");
+
+        let t = render_table(std::slice::from_ref(&r));
+        assert!(t.contains("**0.09**"), "{t}");
+    }
+
+    #[test]
+    fn a_confident_correct_tempo_needs_no_explaining() {
+        let mut r = ValidationRow {
+            tempo_uncertain: Some(false),
+            tempo_confidence: Some(0.92),
+            ..row("Show Me Love", "house", 120.0, "", &Features::default())
+        };
+        r.estimated_bpm = Some(120.23);
+        r.verdict = verdict(120.0, r.estimated_bpm);
+        assert_eq!(Summary::of(std::slice::from_ref(&r)).tempo_discarded, 0);
+        assert!(render_diagnostics(std::slice::from_ref(&r)).is_empty());
     }
 
     #[test]
@@ -947,6 +1083,7 @@ mod tests {
                 beat_offset_secs: 0.0,
                 canonical_window_bpm: [90.0, 180.0],
                 alternates: Vec::new(),
+                confidence_factors: Default::default(),
             }),
             key: None,
         };
@@ -987,6 +1124,7 @@ mod tests {
                 beat_offset_secs: 0.0,
                 canonical_window_bpm: [90.0, 180.0],
                 alternates: Vec::new(),
+                confidence_factors: Default::default(),
             }),
             key: Some(crate::types::KeyEstimate {
                 key: "A minor".into(),

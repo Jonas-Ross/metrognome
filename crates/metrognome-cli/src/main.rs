@@ -323,6 +323,12 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
         summary.total,
         metrognome::validate::BPM_TOLERANCE
     );
+    if summary.tempo_discarded > 0 {
+        eprintln!(
+            "       {} of those flagged uncertain, which a consumer discards",
+            summary.tempo_discarded
+        );
+    }
     if summary.key_checked > 0 {
         eprintln!(
             "key:   {} of {} agreed (provisional, does not gate)",
@@ -337,7 +343,7 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
         eprintln!("\nkey scoring\n{scoring}");
     }
     // The table says which rows are wrong; this says what they were wrong
-    // about. Failures only — a passing row needs no explaining.
+    // about, and covers a correct tempo the consumer will throw away.
     let diagnostics = metrognome::validate::render_diagnostics(rows);
     if !diagnostics.is_empty() {
         eprintln!("\n{diagnostics}");
@@ -352,6 +358,7 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
             // Tempo failures only, matching the exit status.
             "failures": failures,
             "tempo_ok": summary.tempo_ok,
+            "tempo_discarded": summary.tempo_discarded,
             "key_checked": summary.key_checked,
             "key_agreed": summary.key_agreed,
         }))?
