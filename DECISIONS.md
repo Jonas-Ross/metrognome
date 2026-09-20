@@ -910,3 +910,85 @@ The lesson is the one entry 34 also paid for. On 24 synthetic cases `clarity`,
 distinguish any of these explanations. Reasoning backwards from the two numbers
 the output did expose produced a confident, wrong answer; one instrumented run
 produced the right one in minutes. Instrument before theorising.
+
+## 37. The comb scorer judges a beat grid's whole metrical lattice
+
+Entry 36 left the tempo scorer unable to separate a tempo from its own 3/2 on
+sixteenth-dense material, with the margin fix held back because closing it would
+have cost coverage the scorer had not earned. This is that fix.
+
+The defect is sharper than the small margins made it look. A synthetic
+`OffbeatTrance` groove at 170 BPM with clutter between the beats is read as
+**136 BPM at confidence 0.979** — a confidently wrong answer, not a hesitant
+right one. 136 is 4/5 of 170, a grid every five sixteenths.
+
+The mechanism is the one entry 36 predicted. `comb_score` ranks a candidate as
+`precision - MISS_PENALTY * (1 - recall)`, and `recall` asks what share of the
+onset energy falls on the grid's *beats*. On material with an event on most
+sixteenths that share runs under 0.2 for every candidate, so the penalty is
+near-constant and cancels out of the comparison. `precision` — `mean - sd` on
+the grid's own points — is left to decide alone, and it prefers whichever grid
+finds the tidiest set of events, which on dense material is routinely the wrong
+one: the true beat alternates kick, snare and a bar of nothing, while a grid at
+4/5 of it samples a uniform spread of sixteenths.
+
+**The fix: charge the miss penalty at three metrical levels** — the beat, its
+eighths and its sixteenths (`LATTICE_DIVISORS`) — instead of at the beat alone.
+A true beat's lattice accounts for where the music puts its events; a grid at
+3/2 or 4/5 of it predicts subdivisions that fall *between* the real ones, and
+the lower levels say so even when the beat level has gone flat. `MISS_PENALTY`
+is unchanged at 3.0 and is now charged once per level.
+
+Seven formulations were measured over 51 synthetic cases (three grooves, four
+tempos, three clutter settings), scoring each on how often the true tempo won
+and how far ahead it finished:
+
+| scoring | true tempo wins | smallest gap | median gap |
+|---|---:|---:|---:|
+| beat only (before) | 49/51 | 0.35 | 3.93 |
+| sixteenths only | 50/51 | 0.04 | 4.89 |
+| beat + sixteenths | 51/51 | 0.05 | 4.94 |
+| **beat + eighths + sixteenths** | **51/51** | **1.04** | **5.89** |
+
+Replacing the beat level rather than adding to it is not enough: a lattice at
+one depth can be a superset of the material's own grid, which is why 3/4 of a
+click track scores a perfect sixteenth-level recall. Three levels together have
+no such blind spot in the set measured.
+
+**The margin fix from entry 36 now lands free, so it ships here too.**
+`metrically_related` is deleted and the nearest reading at any other tempo
+counts against confidence. On the ten reference previews, measured on real
+audio:
+
+| Track | before | margin fix alone | both |
+|---|---:|---:|---:|
+| Brown Paper Bag | 0.089 | 0.089 | **0.392** |
+| Born Slippy | 0.341 | 0.27 | 0.341 |
+| Sandstorm | 0.545 | 0.47 | **0.673** |
+| Inner City Life | 0.870 | 0.80 | 0.870 |
+| the other six | 0.88-0.95 | unchanged | 0.88-0.95 |
+
+Every one of the ten now has a gap over its nearest rival above 1.0, so `margin`
+saturates for all of them and counting metric neighbours costs nothing — the
+smallest gap moved from 0.003 to 1.18. All ten stay within 0.1 BPM, discards
+stay at two, and Sandstorm clears the consumer's cutoff with headroom rather
+than being binned by the honest accounting.
+
+**What this does not fix, and entry 36 got wrong about it.** Entry 36 said
+Brown Paper Bag's `margin` of 0.0027 "is the whole story". It was not. With the
+margin at a full 1.0 the track reaches only 0.392, because `clarity` 0.500,
+`evenness` 0.319 and `periodic` 0.296 cap it there — a 4.4x improvement and
+still discarded. Its beat grid really is weak in the envelope, which is the same
+complaint as Born Slippy's autocorrelation of 0.114 and points at the onset
+envelope rather than the scorer. That remains open.
+
+**A limit worth naming.** The lattice cannot separate a tempo from its 4/3 when
+the material carries an equally loud event on *every eighth*: both readings then
+explain the audio, and the gap on a synthetic case built that way falls from
+0.284 to 0.020, taking confidence to 0.35. The winner is still correct; the tool
+reports that it is unsure, which is the behaviour to want. No reference track
+looks like this — it takes clutter synthesized at kick amplitude to reach.
+
+`ALGORITHM_VERSION` 8 to 9 and `TEMPO_SOURCE` to `@2`: every cached tempo
+confidence moves, and some estimates do. `SCHEMA_VERSION` stays at 2 — no field
+is added, moved or redefined.
