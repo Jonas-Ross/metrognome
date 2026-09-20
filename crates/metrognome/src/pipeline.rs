@@ -425,7 +425,7 @@ mod tests {
         let s = key.scoring.expect("scoring");
         // The confidence is exactly the product of the reported factors, so a
         // surprising number can always be attributed to one of them.
-        let product = s.strength * s.margin * s.tonality * s.coverage;
+        let product = s.strength * s.margin * s.structure * s.coverage;
         assert!(
             (product - key.confidence).abs() < 0.002,
             "{product} vs {}",

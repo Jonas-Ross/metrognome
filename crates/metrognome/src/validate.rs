@@ -534,12 +534,12 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             // backwards from the alternates.
             if let Some(k) = &r.key_scoring {
                 out.push_str(&format!(
-                    "    key scoring: corr {:.3} vs runner-up {:.3} | strength {:.2} margin {:.2} tonality {:.2} coverage {:.2} | salience {:.2}, tonal pitch classes {:.2}\n",
+                    "    key scoring: corr {:.3} vs runner-up {:.3} | strength {:.2} margin {:.2} structure {:.2} coverage {:.2} | salience {:.2}, tonal pitch classes {:.2}\n",
                     k.correlation,
                     k.runner_up,
                     k.strength,
                     k.margin,
-                    k.tonality,
+                    k.structure,
                     k.coverage,
                     k.salience,
                     k.tonal_pitch_classes
@@ -562,7 +562,7 @@ pub fn render_key_scoring(rows: &[ValidationRow]) -> String {
             continue;
         };
         out.push_str(&format!(
-            "{:<42} {:<10} conf {:.2} {:<9} corr {:.3} vs {:.3} | strength {:.2} margin {:.2} tonality {:.2} coverage {:.2} | sal {:.2} tpc {:.2}\n",
+            "{:<42} {:<10} conf {:.2} {:<9} corr {:.3} vs {:.3} | strength {:.2} margin {:.2} structure {:.2} coverage {:.2} | sal {:.2} tpc {:.2}\n",
             r.label,
             r.estimated_key.as_deref().unwrap_or("none"),
             r.key_confidence.unwrap_or(0.0),
@@ -575,7 +575,7 @@ pub fn render_key_scoring(rows: &[ValidationRow]) -> String {
             k.runner_up,
             k.strength,
             k.margin,
-            k.tonality,
+            k.structure,
             k.coverage,
             k.salience,
             k.tonal_pitch_classes,
@@ -821,7 +821,7 @@ mod tests {
             tonal_pitch_classes: 6.2,
             strength: 1.0,
             margin: 0.95,
-            tonality: 1.0,
+            structure: 1.0,
             coverage: 1.0,
         });
         r.matched = Some(MatchedTrack {
@@ -857,7 +857,7 @@ mod tests {
             tonal_pitch_classes: 6.0,
             strength: 1.0,
             margin: 0.08,
-            tonality: 1.0,
+            structure: 1.0,
             coverage: 1.0,
         });
         assert!(passing.passed(), "row must pass, or this proves nothing");

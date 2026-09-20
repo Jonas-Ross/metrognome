@@ -698,8 +698,9 @@ classes against a saturation of 5.5. It catches the synthetic sparse riff it was
 written for and nothing else; on real music it is inert. It stays, because the
 riff case is real, but it does no work here.
 
-`tonality` is the one that bit, and it bit indiscriminately: it was the smallest
-factor on twenty-four of the thirty-one, and only four tracks survived at all.
+The salience term — `tonality` until this entry, `structure` after it — is the
+one that bit, and it bit indiscriminately: it was the smallest factor on
+twenty-four of the thirty-one, and only four tracks survived at all.
 Salience runs 0.105 to 0.765 on real music, against a ramp from 0.15 to 0.55, so
 almost every real track sits inside it and is marked down by an amount that has
 nothing to do with whether its key is determinable.
@@ -719,6 +720,10 @@ floor 0.40, a breakbeat 0.43, against 0.53-0.91 for real tracks carrying
 harmony, with the percussion-led records (*Spastik* 0.304, *Phat Planet* 0.332)
 correctly at the bottom. So the correlation term takes over the job, ramped from
 0.45 rather than from zero, since all the discrimination lives in that band.
+
+The name goes with the job. A factor called `tonality` reading 1.00 on a dense
+club track invites exactly the misreading that produced this entry, so it is
+`structure` now: whether the chroma has any shape to correlate against.
 
 Salience keeps one job, which nothing else can do: white noise correlates 0.633
 with some profile, because correlation is offset-invariant and cannot see that

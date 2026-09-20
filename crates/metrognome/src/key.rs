@@ -255,14 +255,14 @@ const KEY_MARGIN_SCALE: f32 = 0.10;
 /// as well as a chord does. White noise measures 0.005 against 0.105 for the
 /// least tonal real track in a 31-track sample, so the two are separable by
 /// two orders of magnitude and the guard does not need to be a ramp.
-const TONALITY_FLOOR: f32 = 0.02;
+const STRUCTURE_FLOOR: f32 = 0.02;
 
 /// Salience above which a chroma is no longer suspected of being flat.
 ///
 /// Below every real track measured, because salience tracks arrangement
 /// density rather than whether a key exists: a sparse ambient piece reads 0.77
 /// and a dense club mix 0.15, and both can state a key perfectly well.
-const TONALITY_SATURATION: f32 = 0.10;
+const STRUCTURE_SATURATION: f32 = 0.10;
 
 /// Tonal pitch classes below which a chroma cannot name a key at all.
 ///
@@ -349,13 +349,13 @@ pub fn estimate_key_scored(
     // few pitch classes to choose a key from, however well the profiles fit.
     let salience = chroma.salience();
     let tonal_pitch_classes = chroma.tonal_pitch_classes();
-    let tonality = ramp(salience, TONALITY_FLOOR, TONALITY_SATURATION);
+    let structure = ramp(salience, STRUCTURE_FLOOR, STRUCTURE_SATURATION);
     let coverage = ramp(tonal_pitch_classes, COVERAGE_FLOOR, COVERAGE_SATURATION);
     // No factor substitutes for another: a correlation that ties with the
     // relative minor is a coin flip, a clear winner among weak correlations is
     // noise, and a clear winner over three pitch classes is a riff several keys
     // would claim.
-    let confidence = crate::types::normalize_confidence(strength * margin * tonality * coverage);
+    let confidence = crate::types::normalize_confidence(strength * margin * structure * coverage);
 
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
@@ -382,7 +382,7 @@ pub fn estimate_key_scored(
         tonal_pitch_classes,
         strength,
         margin,
-        tonality,
+        structure,
         coverage,
     };
 
@@ -757,7 +757,7 @@ mod tests {
     fn a_click_track_does_not_produce_a_confident_key() {
         // Broadband clicks correlate with a key profile about as well as
         // anything does, because correlation cannot see how flat the chroma is.
-        // The tonality gate is what stops this reading as a real key.
+        // The correlation floor is what stops this reading as a real key.
         let sig = testsig::click_track(122.0, 20.0, SR);
         match key_of(&sig, KeyProfile::Edm) {
             None => {}
@@ -782,9 +782,9 @@ mod tests {
         let drums = chroma(&testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor)).salience();
         let noise = chroma(&noise).salience();
 
-        assert!(noise < TONALITY_FLOOR, "noise {noise}");
-        assert!(drums > TONALITY_SATURATION, "drums {drums}");
-        assert!(chords > TONALITY_SATURATION, "chords {chords}");
+        assert!(noise < STRUCTURE_FLOOR, "noise {noise}");
+        assert!(drums > STRUCTURE_SATURATION, "drums {drums}");
+        assert!(chords > STRUCTURE_SATURATION, "chords {chords}");
     }
 
     #[test]

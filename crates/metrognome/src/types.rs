@@ -123,7 +123,7 @@ pub struct KeyEstimate {
 ///
 /// `confidence` is their product, so a low one is explained by whichever term
 /// is small: nothing fits better than drums would (`strength`), two keys tie
-/// (`margin`), the chroma is flat (`tonality`), or it states too few pitch
+/// (`margin`), the chroma is flat (`structure`), or it states too few pitch
 /// classes (`coverage`). Diagnostic only — nothing in the contract depends on
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ pub struct KeyScoring {
     pub correlation: f32,
     /// Correlation of the runner-up.
     pub runner_up: f32,
-    /// Chroma salience, before the tonality floor is applied.
+    /// Chroma salience, before the structure floor is applied.
     pub salience: f32,
     /// Effective count of pitch classes carrying tonal energy.
     pub tonal_pitch_classes: f32,
@@ -141,8 +141,8 @@ pub struct KeyScoring {
     /// How far ahead of the runner-up it is, 0-1.
     pub margin: f32,
     /// Whether the chroma has any structure to correlate against, 0-1. A floor
-    /// against noise, not a measure of how tonal the material is.
-    pub tonality: f32,
+    /// against a flat chroma, not a measure of how tonal the material is.
+    pub structure: f32,
     /// Whether enough distinct pitch classes are present to choose, 0-1.
     pub coverage: f32,
 }
