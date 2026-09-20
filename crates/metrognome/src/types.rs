@@ -93,6 +93,8 @@ pub struct TempoConfidenceFactors {
     pub periodicity: f32,
     /// Beats of audio the estimate stands on.
     pub observed_beats: f32,
+    /// The chosen reading's own comb score, which the alternates never carry.
+    pub winner_score: f32,
 }
 
 /// Tempo in beats per minute.

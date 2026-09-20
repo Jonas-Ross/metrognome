@@ -424,13 +424,14 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         .map(|c| c.score);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
-    let (raw_confidence, confidence_factors) = confidence(
+    let (raw_confidence, mut confidence_factors) = confidence(
         best.mean,
         best.sd,
         rival.map(|r| best.score - r),
         periodicity,
         observed_beats,
     );
+    confidence_factors.winner_score = best.score;
     let confidence = crate::types::normalize_confidence(raw_confidence);
 
     let mut alternates: Vec<Alternate> = Vec::new();
@@ -578,6 +579,8 @@ fn confidence(
             rival_gap: gap,
             periodicity,
             observed_beats,
+            // Filled in by the caller, which is the only place it is known.
+            winner_score: 0.0,
         },
     )
 }

@@ -566,9 +566,10 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
                 f.coverage
             ));
             out.push_str(&format!(
-                "           beat mean {:.3} sd {:.3}, gap over best rival {}, acf {:.3}, beats {:.0}\n",
+                "           beat mean {:.3} sd {:.3}, score {:.3}, gap over best rival {}, acf {:.3}, beats {:.0}\n",
                 f.beat_mean,
                 f.beat_sd,
+                f.winner_score,
                 f.rival_gap
                     .map_or_else(|| "none".to_string(), |g| format!("{g:.3}")),
                 f.periodicity,
@@ -907,6 +908,7 @@ mod tests {
                 rival_gap: Some(0.84),
                 periodicity: 0.91,
                 observed_beats: 85.0,
+                winner_score: -3.335,
             }),
         });
 
@@ -969,6 +971,7 @@ mod tests {
             silent_fraction: 0.03,
             tempo_alternates: Vec::new(),
             key_alternates: vec![alt(10.0, Some("B minor (10A)"), "dominant", 0.577)],
+            tempo_confidence_factors: None,
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("corr 0.908 vs runner-up 0.636"), "{d}");
@@ -1020,6 +1023,7 @@ mod tests {
             silent_fraction: 0.01,
             tempo_alternates: Vec::new(),
             key_alternates: vec![alt(8.0, Some("A minor (8A)"), "other", 0.774)],
+            tempo_confidence_factors: None,
         });
         let d = render_diagnostics(&[r]);
         assert!(d.contains("a consumer discards this"), "{d}");
