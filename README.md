@@ -126,6 +126,9 @@ a consumer can override.
 Key comes out in both standard notation and Camelot (`"F minor"`, `"4A"`),
 correlated against EDM-weighted profiles by default;
 `--key-profile krumhansl` switches to the classical Krumhansl-Schmuckler set.
+`--explain-key` attaches the factors behind the confidence to each result, which
+is how a surprising key is diagnosed over a set of tracks `validate` does not
+cover.
 
 **Tempo is validated; key is provisional.** They are not equally trustworthy and
 the output should not be read as though they were. Tempo is checked against

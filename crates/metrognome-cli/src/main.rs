@@ -108,6 +108,12 @@ struct CommonOpts {
     /// Do not read or write the cache.
     #[arg(long)]
     no_cache: bool,
+    /// Attach the per-factor breakdown behind each key confidence.
+    ///
+    /// For working out why a key scored the way it did over an arbitrary set
+    /// of tracks, which the fixed reference set of `validate` cannot cover.
+    #[arg(long)]
+    explain_key: bool,
     /// Origin for the iTunes API. Hidden: it exists so the test suite can point
     /// the binary at a local stand-in, and so a network problem can be
     /// reproduced against a proxy.
@@ -172,7 +178,7 @@ impl CommonOpts {
             burst: self.burst,
             analysis: AnalysisOptions {
                 key_profile: self.key_profile,
-                explain_key_scoring: false,
+                explain_key_scoring: self.explain_key,
             },
             cache_path,
         })
@@ -500,6 +506,26 @@ mod tests {
         let mut argv = vec!["metrognome"];
         argv.extend_from_slice(args);
         Wrapper::parse_from(argv).opts
+    }
+
+    #[test]
+    fn explain_key_is_off_unless_asked_and_always_on_for_diagnostics() {
+        assert!(!opts(&[]).config().unwrap().analysis.explain_key_scoring);
+        assert!(
+            opts(&["--explain-key"])
+                .config()
+                .unwrap()
+                .analysis
+                .explain_key_scoring
+        );
+        // `validate` and `selftest` want it regardless of the flag.
+        assert!(
+            opts(&[])
+                .fresh_config()
+                .unwrap()
+                .analysis
+                .explain_key_scoring
+        );
     }
 
     #[test]
