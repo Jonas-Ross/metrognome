@@ -46,8 +46,8 @@ impl KeyProfile {
 
     fn source(self) -> &'static str {
         match self {
-            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@2",
-            KeyProfile::Edm => "metrognome/chroma-correlation-edm@2",
+            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@3",
+            KeyProfile::Edm => "metrognome/chroma-correlation-edm@3",
         }
     }
 
@@ -225,11 +225,19 @@ fn correlate(chroma: &[f32; 12], profile: &[f32; 12], tonic: usize) -> f32 {
     }
 }
 
+/// Correlation below which the best-fitting profile is no better than what
+/// percussion alone produces.
+///
+/// Measured: a click track 0.35, four-on-the-floor 0.40, a breakbeat 0.43,
+/// against 0.53-0.91 for real tracks carrying harmony. This is the term that
+/// rejects a drum loop, so it starts where drums stop.
+const KEY_CORRELATION_FLOOR: f32 = 0.45;
+
 /// Correlation at which a key is considered clearly stated.
 ///
 /// Real music never approaches 1, since the chroma carries percussion too.
-/// 0.75 is about what an unambiguous tonal centre reaches.
-const KEY_CORRELATION_SATURATION: f32 = 0.75;
+/// 0.85 is about what an unambiguous tonal centre reaches over a full mix.
+const KEY_CORRELATION_SATURATION: f32 = 0.85;
 
 /// Correlation lead, as a fraction of the winner's own correlation, at which
 /// the margin term reaches 1/e of the way to 1.
@@ -240,18 +248,21 @@ const KEY_CORRELATION_SATURATION: f32 = 0.75;
 /// quite reaches certainty and a close one is not rounded up to it.
 const KEY_MARGIN_SCALE: f32 = 0.10;
 
-/// Chroma salience below which a clip is treated as having no tonal content.
+/// Chroma salience below which there is no structure to correlate against.
 ///
-/// Measured percussion sits at 0.20-0.25 and white noise near 0.005, so a floor
-/// here zeroes out the confidence of anything that is only drums.
-const TONALITY_FLOOR: f32 = 0.15;
+/// A guard against a flat chroma, not a measure of how tonal a track is:
+/// correlation is offset-invariant, so noise with a 0.5% ripple fits a profile
+/// as well as a chord does. White noise measures 0.005 against 0.105 for the
+/// least tonal real track in a 31-track sample, so the two are separable by
+/// two orders of magnitude and the guard does not need to be a ramp.
+const TONALITY_FLOOR: f32 = 0.02;
 
-/// Salience at which tonal content is no longer in doubt.
+/// Salience above which a chroma is no longer suspected of being flat.
 ///
-/// Sustained chords measure near 1.0 and a full arrangement near 0.8. Below
-/// both, so heavy percussion is not penalized but a drums-only clip cannot
-/// climb out.
-const TONALITY_SATURATION: f32 = 0.55;
+/// Below every real track measured, because salience tracks arrangement
+/// density rather than whether a key exists: a sparse ambient piece reads 0.77
+/// and a dense club mix 0.15, and both can state a key perfectly well.
+const TONALITY_SATURATION: f32 = 0.10;
 
 /// Tonal pitch classes below which a chroma cannot name a key at all.
 ///
@@ -264,6 +275,14 @@ const COVERAGE_FLOOR: f32 = 3.5;
 /// A diatonic progression exercises 5-7; every synthetic key lands at 5.0 or
 /// above, so a real progression is not penalized for stopping short of seven.
 const COVERAGE_SATURATION: f32 = 5.5;
+
+/// Linear ramp from `floor` to `saturation`, clamped to 0-1.
+///
+/// Three of the four confidence factors are this shape, so they are worth
+/// reading as the same kind of thing.
+fn ramp(v: f32, floor: f32, saturation: f32) -> f32 {
+    ((v - floor) / (saturation - floor)).clamp(0.0, 1.0)
+}
 
 /// How `other` relates to the chosen key, for the alternates list.
 fn relation(tonic: usize, minor: bool, other_tonic: usize, other_minor: bool) -> &'static str {
@@ -318,24 +337,20 @@ pub fn estimate_key_scored(
         return None;
     }
 
-    // Linear rather than softened by a root: a weak best fit is exactly where
-    // the relative margin below turns a small absolute lead into a large one,
-    // so this is the term that has to bite. Above the saturation it clamps to
-    // 1.0, so real material is unaffected either way.
-    let strength = (r1 / KEY_CORRELATION_SATURATION).clamp(0.0, 1.0);
+    // Ramped from a floor rather than from zero: every correlation a real track
+    // produces sits above what percussion reaches, so the useful discrimination
+    // is all in that band and measuring from 0 wastes it.
+    let strength = ramp(r1, KEY_CORRELATION_FLOOR, KEY_CORRELATION_SATURATION);
     // Relative to the winner, so a lead of 0.05 over a correlation of 0.95
     // counts for less than the same lead over 0.30.
     let margin = 1.0 - (-((r1 - r2) / r1) / KEY_MARGIN_SCALE).exp();
-    // Gates on the chroma itself: below the salience floor there is nothing
-    // tonal to have an opinion about, and below the coverage floor not enough
-    // of it to choose a key from, however well the profiles happen to fit.
+    // Gates on the chroma itself: below the salience floor the chroma is flat
+    // and any fit is an accident, and below the coverage floor there are too
+    // few pitch classes to choose a key from, however well the profiles fit.
     let salience = chroma.salience();
     let tonal_pitch_classes = chroma.tonal_pitch_classes();
-    let tonality =
-        ((salience - TONALITY_FLOOR) / (TONALITY_SATURATION - TONALITY_FLOOR)).clamp(0.0, 1.0);
-    let coverage = ((tonal_pitch_classes - COVERAGE_FLOOR)
-        / (COVERAGE_SATURATION - COVERAGE_FLOOR))
-        .clamp(0.0, 1.0);
+    let tonality = ramp(salience, TONALITY_FLOOR, TONALITY_SATURATION);
+    let coverage = ramp(tonal_pitch_classes, COVERAGE_FLOOR, COVERAGE_SATURATION);
     // No factor substitutes for another: a correlation that ties with the
     // relative minor is a coin flip, a clear winner among weak correlations is
     // noise, and a clear winner over three pitch classes is a riff several keys
@@ -751,24 +766,54 @@ mod tests {
     }
 
     #[test]
-    fn salience_separates_tonal_material_from_percussion() {
+    fn salience_separates_a_flat_chroma_from_a_structured_one() {
+        // What salience is for after the recalibration: telling noise from
+        // everything else. It does not separate drums from harmony — measured
+        // percussion and a dense real mix both sit near 0.2 — and the
+        // correlation floor is what does that instead.
         let stft = Stft::for_chroma(SR);
-        let chords = chromagram(
-            &stft.magnitudes(&testsig::chord_progression(0, Quality::Major, 12.0, SR), SR),
-        );
-        let drums = chromagram(
-            &stft.magnitudes(&testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor), SR),
-        );
-        assert!(
-            chords.salience() > TONALITY_SATURATION,
-            "{}",
-            chords.salience()
-        );
-        assert!(
-            drums.salience() < TONALITY_FLOOR + 0.15,
-            "{}",
-            drums.salience()
-        );
+        let chroma = |sig: &[f32]| chromagram(&stft.magnitudes(sig, SR));
+        let mut n = testsig::Noise::new(5);
+        let noise: Vec<f32> = (0..SR as usize * 12)
+            .map(|_| n.next_sample() * 0.3)
+            .collect();
+
+        let chords = chroma(&testsig::chord_progression(0, Quality::Major, 12.0, SR)).salience();
+        let drums = chroma(&testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor)).salience();
+        let noise = chroma(&noise).salience();
+
+        assert!(noise < TONALITY_FLOOR, "noise {noise}");
+        assert!(drums > TONALITY_SATURATION, "drums {drums}");
+        assert!(chords > TONALITY_SATURATION, "chords {chords}");
+    }
+
+    #[test]
+    fn the_correlation_floor_is_what_rejects_percussion() {
+        // Drums correlate with some profile about as well as anything does,
+        // and no better than the floor. Harmony clears it outright.
+        let stft = Stft::for_chroma(SR);
+        let best = |sig: &[f32]| {
+            let c = chromagram(&stft.magnitudes(sig, SR));
+            estimate_key_scored(&c, KeyProfile::Edm)
+                .map(|(_, s)| s.correlation)
+                .unwrap_or(0.0)
+        };
+        for (label, sig) in [
+            ("click", testsig::click_track(122.0, 16.0, SR)),
+            (
+                "four on floor",
+                testsig::groove(128.0, 16.0, SR, Groove::FourOnFloor),
+            ),
+            (
+                "breakbeat",
+                testsig::groove(170.0, 16.0, SR, Groove::Breakbeat),
+            ),
+        ] {
+            let r = best(&sig);
+            assert!(r < KEY_CORRELATION_FLOOR, "{label} correlated {r}");
+        }
+        let chords = best(&testsig::chord_progression(9, Quality::Minor, 16.0, SR));
+        assert!(chords > KEY_CORRELATION_SATURATION, "chords {chords}");
     }
 
     #[test]

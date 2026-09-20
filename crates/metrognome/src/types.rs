@@ -122,9 +122,10 @@ pub struct KeyEstimate {
 /// The factors behind a key confidence, for diagnosing a surprising estimate.
 ///
 /// `confidence` is their product, so a low one is explained by whichever term
-/// is small: the profiles fit nothing (`strength`), two keys tie (`margin`),
-/// the clip is percussive (`tonality`), or it states too few pitch classes
-/// (`coverage`). Diagnostic only — nothing in the contract depends on it.
+/// is small: nothing fits better than drums would (`strength`), two keys tie
+/// (`margin`), the chroma is flat (`tonality`), or it states too few pitch
+/// classes (`coverage`). Diagnostic only — nothing in the contract depends on
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct KeyScoring {
     /// Correlation of the winning profile.
@@ -139,7 +140,8 @@ pub struct KeyScoring {
     pub strength: f32,
     /// How far ahead of the runner-up it is, 0-1.
     pub margin: f32,
-    /// How tonal the clip is at all, 0-1.
+    /// Whether the chroma has any structure to correlate against, 0-1. A floor
+    /// against noise, not a measure of how tonal the material is.
     pub tonality: f32,
     /// Whether enough distinct pitch classes are present to choose, 0-1.
     pub coverage: f32,
