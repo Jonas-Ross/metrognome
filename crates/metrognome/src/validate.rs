@@ -263,7 +263,7 @@ impl MatchedTrack {
             tempo_confidence_factors: features
                 .tempo
                 .as_ref()
-                .map(|t| t.confidence_factors.clone()),
+                .and_then(|t| t.confidence_factors.clone()),
         }
     }
 }
@@ -1087,7 +1087,7 @@ mod tests {
                 beat_offset_secs: 0.0,
                 canonical_window_bpm: [90.0, 180.0],
                 alternates: Vec::new(),
-                confidence_factors: Default::default(),
+                confidence_factors: None,
             }),
             key: None,
         };
@@ -1128,7 +1128,7 @@ mod tests {
                 beat_offset_secs: 0.0,
                 canonical_window_bpm: [90.0, 180.0],
                 alternates: Vec::new(),
-                confidence_factors: Default::default(),
+                confidence_factors: None,
             }),
             key: Some(crate::types::KeyEstimate {
                 key: "A minor".into(),

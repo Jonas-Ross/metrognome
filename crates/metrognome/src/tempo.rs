@@ -493,7 +493,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         beat_offset_secs: round3(beat_offset),
         canonical_window_bpm: [CANONICAL_LOW_BPM, CANONICAL_HIGH_BPM],
         alternates,
-        confidence_factors,
+        confidence_factors: Some(confidence_factors),
     })
 }
 
@@ -846,11 +846,11 @@ mod tests {
             b.confidence
         );
         // And it is the level, not the competition, that carries the loss.
+        let a_mean = a.confidence_factors.as_ref().unwrap().beat_mean;
+        let b_mean = b.confidence_factors.as_ref().unwrap().beat_mean;
         assert!(
-            b.confidence_factors.beat_mean < a.confidence_factors.beat_mean - 1.0,
-            "clean mean {} busy mean {}",
-            a.confidence_factors.beat_mean,
-            b.confidence_factors.beat_mean
+            b_mean < a_mean - 1.0,
+            "clean mean {a_mean} busy mean {b_mean}"
         );
     }
 
