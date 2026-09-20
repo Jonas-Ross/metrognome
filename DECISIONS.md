@@ -853,7 +853,32 @@ material with an event on most sixteenths any such grid finds an onset at every
 step it predicts. `recall` across every candidate on those tracks runs 0.054 to
 0.175, so `MISS_PENALTY * (1 - recall)` is near-constant and stops separating
 anything; `precision` is left to do the work alone, and it cannot tell a beat
-from a beat times 2/3. A synthetic probe at 170 BPM reproduces it: true beat
+from a beat times 2/3.
+
+The measurements a fix is graded against, from the instrumented run. `score` is
+the chosen reading's own comb score and `gap` is its lead over the named
+neighbour, whether or not the rival filter currently counts it:
+
+| Track | BPM | score | nearest metric neighbour | gap |
+|---|---:|---:|---|---:|
+| Brown Paper Bag | 170.03 | -3.335 | 97.22, 7/4 below | **0.003** |
+| Sandstorm | 136.07 | -2.393 | 90.71, 3/2 below | 0.232 |
+| Born Slippy | 140.09 | -2.601 | 93.24, 3/2 below | 0.402 |
+| Inner City Life | 154.99 | -0.544 | 103.32, 3/2 below | 0.721 |
+| Tarantula | 174.11 | -0.825 | 116.04, 3/2 below | 1.629 |
+| Show Me Love | 120.23 | -0.646 | 160.30, 4/3 above | 1.909 |
+| Hey Boy Hey Girl | 126.99 | -0.143 | 169.30, 4/3 above | 2.627 |
+| Around the World | 121.28 | 1.058 | 161.69, 4/3 above | 3.550 |
+| Music Sounds Better | 124.20 | 1.577 | 165.60, 4/3 above | 3.778 |
+| Call on Me | 126.30 | 2.409 | 168.41, 4/3 above | 5.410 |
+
+The correlation to work from: the four smallest gaps all belong to tracks whose
+winner scores *negative*, and all three tracks scoring above zero have gaps past
+3.5. A scorer that cannot explain the true beat well in absolute terms cannot
+separate it from its own subdivisions either, so these are one problem and not
+two.
+
+A synthetic probe at 170 BPM reproduces it: true beat
 -0.505, six sixteenths -0.690, eight -0.717, ten **+0.240 — winning outright**.
 That is the follow-up, and it is a selection bug, not a calibration one.
 
