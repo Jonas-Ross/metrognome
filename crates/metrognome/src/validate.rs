@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{analyze_pcm_with, AnalysisOptions};
 use crate::testsig::{self, Groove, Quality};
-use crate::types::{Alternate, AudioInfo, Features, TrackMatch};
+use crate::types::{Alternate, AudioInfo, Features, KeyScoring, TrackMatch};
 
 /// One track with a documented tempo.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -176,6 +176,15 @@ pub struct ValidationRow {
     pub tempo_confidence: Option<f32>,
     /// Key confidence.
     pub key_confidence: Option<f32>,
+    /// Whether the key estimate flags itself a hint. This is what a consumer
+    /// branches on, so the table shows it rather than leaving it to be
+    /// inferred from the confidence. Absent when there is no key, which is
+    /// also how a run recorded before the field existed reads back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_uncertain: Option<bool>,
+    /// The factors behind the key confidence, when diagnostics were asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_scoring: Option<KeyScoring>,
     /// How the tempo estimate relates to its expectation. See [`Verdict`].
     pub verdict: Verdict,
     /// Whether the key came out as expected. `None` when the case carries no
@@ -373,6 +382,8 @@ pub fn row(
         camelot: features.key.as_ref().map(|k| k.camelot.clone()),
         tempo_confidence: features.tempo.as_ref().map(|t| t.confidence),
         key_confidence: features.key.as_ref().map(|k| k.confidence),
+        key_uncertain: features.key.as_ref().map(|k| k.uncertain),
+        key_scoring: features.key.as_ref().and_then(|k| k.scoring),
         matched: None,
         verdict: verdict(expected_bpm, estimated_bpm),
         key_ok: if expected_key.is_empty() {
@@ -400,8 +411,8 @@ fn or_dash(v: Option<f32>) -> String {
 /// Render rows as a GitHub-flavoured markdown table.
 pub fn render_table(rows: &[ValidationRow]) -> String {
     let mut out = String::new();
-    out.push_str("| Track | Genre | Expected BPM | Estimated BPM | Verdict | Tempo conf. | Expected key | Estimated key | Camelot | Key conf. |\n");
-    out.push_str("|---|---|---:|---:|---|---:|---|---|---|---:|\n");
+    out.push_str("| Track | Genre | Expected BPM | Estimated BPM | Verdict | Tempo conf. | Expected key | Estimated key | Camelot | Key conf. | Key kept |\n");
+    out.push_str("|---|---|---:|---:|---|---:|---|---|---|---:|---|\n");
     for r in rows {
         let verdict = match r.verdict {
             Verdict::Ok => "ok",
@@ -419,7 +430,7 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
             (None, _) => DASH.to_string(),
         };
         out.push_str(&format!(
-            "| {} | {} | {:.0} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {:.0} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.label,
             r.genre,
             r.expected_bpm,
@@ -434,6 +445,14 @@ pub fn render_table(rows: &[ValidationRow]) -> String {
             estimated_key,
             r.camelot.as_deref().unwrap_or(DASH),
             or_dash(r.key_confidence),
+            // What a consumer actually does with the row: an uncertain key is
+            // a hint it discards, so a confident wrong answer and a discarded
+            // one do not look alike in the table.
+            match r.key_uncertain {
+                Some(true) => "no",
+                Some(false) => "yes",
+                None => DASH,
+            },
         ));
     }
     out
@@ -501,12 +520,66 @@ pub fn render_diagnostics(rows: &[ValidationRow]) -> String {
             // hundredths is the chromagram working and the tiebreak failing;
             // an unrelated key winning outright is the chromagram failing.
             out.push_str(&format!(
-                "    key: {} conf {:.2}, runners-up: {}\n",
+                "    key: {} conf {:.2}{}, runners-up: {}\n",
                 r.estimated_key.as_deref().unwrap_or("none"),
                 r.key_confidence.unwrap_or(0.0),
+                match r.key_uncertain {
+                    Some(true) => " (uncertain, a consumer discards this)",
+                    _ => "",
+                },
                 describe_alternates(&m.key_alternates)
             ));
+            // Confidence is the product of these, so the smallest one names
+            // the reason. Without it a surprising number has to be reasoned
+            // backwards from the alternates.
+            if let Some(k) = &r.key_scoring {
+                out.push_str(&format!(
+                    "    key scoring: corr {:.3} vs runner-up {:.3} | strength {:.2} margin {:.2} structure {:.2} coverage {:.2} | salience {:.2}, tonal pitch classes {:.2}\n",
+                    k.correlation,
+                    k.runner_up,
+                    k.strength,
+                    k.margin,
+                    k.structure,
+                    k.coverage,
+                    k.salience,
+                    k.tonal_pitch_classes
+                ));
+            }
         }
+    }
+    out
+}
+
+/// Render the key scoring factors for every row that produced a key.
+///
+/// Separate from [`render_diagnostics`], which is failures only: a key that
+/// scored low is not a failure — the reference set carries an expected key for
+/// only three tracks — yet why it scored low is the whole question.
+pub fn render_key_scoring(rows: &[ValidationRow]) -> String {
+    let mut out = String::new();
+    for r in rows {
+        let Some(k) = &r.key_scoring else {
+            continue;
+        };
+        out.push_str(&format!(
+            "{:<42} {:<10} conf {:.2} {:<9} corr {:.3} vs {:.3} | strength {:.2} margin {:.2} structure {:.2} coverage {:.2} | sal {:.2} tpc {:.2}\n",
+            r.label,
+            r.estimated_key.as_deref().unwrap_or("none"),
+            r.key_confidence.unwrap_or(0.0),
+            match r.key_uncertain {
+                Some(true) => "DISCARDED",
+                Some(false) => "kept",
+                None => "",
+            },
+            k.correlation,
+            k.runner_up,
+            k.strength,
+            k.margin,
+            k.structure,
+            k.coverage,
+            k.salience,
+            k.tonal_pitch_classes,
+        ));
     }
     out
 }
@@ -597,6 +670,24 @@ mod tests {
             relation: relation.to_string(),
             score,
         }
+    }
+
+    #[test]
+    fn a_row_saved_before_the_uncertain_flag_still_reads_back() {
+        let json = serde_json::json!({
+            "label": "x",
+            "genre": "house",
+            "expected_bpm": 128.0,
+            "estimated_bpm": 128.0,
+            "expected_key": "",
+            "estimated_key": null,
+            "camelot": null,
+            "tempo_confidence": 0.9,
+            "key_confidence": null,
+            "verdict": "ok",
+        });
+        let row: ValidationRow = serde_json::from_value(json).expect("older row");
+        assert_eq!(row.key_uncertain, None);
     }
 
     #[test]
@@ -715,6 +806,109 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_break_a_key_confidence_into_its_factors() {
+        // The real-audio run this was built for: Sandstorm reported a wrong
+        // key at 0.95 and the reason had to be reasoned backwards out of the
+        // alternates. The factors say it outright.
+        let mut r = row("x", "trance", 136.0, "B", &Features::default());
+        r.estimated_key = Some("E minor".into());
+        r.key_confidence = Some(0.95);
+        r.key_uncertain = Some(false);
+        r.key_scoring = Some(KeyScoring {
+            correlation: 0.908,
+            runner_up: 0.636,
+            salience: 0.9,
+            tonal_pitch_classes: 6.2,
+            strength: 1.0,
+            margin: 0.95,
+            structure: 1.0,
+            coverage: 1.0,
+        });
+        r.matched = Some(MatchedTrack {
+            artist: "Darude".into(),
+            title: "Sandstorm".into(),
+            match_score: 1.0,
+            uncertain: false,
+            preview_secs: 30.0,
+            silent_fraction: 0.03,
+            tempo_alternates: Vec::new(),
+            key_alternates: vec![alt(10.0, Some("B minor (10A)"), "dominant", 0.577)],
+        });
+        let d = render_diagnostics(&[r]);
+        assert!(d.contains("corr 0.908 vs runner-up 0.636"), "{d}");
+        assert!(d.contains("coverage 1.00"), "{d}");
+        assert!(d.contains("tonal pitch classes 6.20"), "{d}");
+    }
+
+    #[test]
+    fn key_scoring_is_reported_for_every_row_not_only_failures() {
+        // Seven of the ten reference tracks carry no expected key, so they
+        // always "pass" and never reach render_diagnostics — and they are
+        // exactly the rows whose low confidence needs explaining.
+        let mut passing = row("passes", "house", 128.0, "", &Features::default());
+        passing.verdict = Verdict::Ok;
+        passing.estimated_key = Some("F major".into());
+        passing.key_confidence = Some(0.08);
+        passing.key_uncertain = Some(true);
+        passing.key_scoring = Some(KeyScoring {
+            correlation: 0.780,
+            runner_up: 0.774,
+            salience: 0.8,
+            tonal_pitch_classes: 6.0,
+            strength: 1.0,
+            margin: 0.08,
+            structure: 1.0,
+            coverage: 1.0,
+        });
+        assert!(passing.passed(), "row must pass, or this proves nothing");
+        assert!(render_diagnostics(&[passing.clone()]).is_empty());
+
+        let s = render_key_scoring(&[passing]);
+        assert!(s.contains("corr 0.780 vs 0.774"), "{s}");
+        assert!(s.contains("margin 0.08"), "{s}");
+        assert!(s.contains("DISCARDED"), "{s}");
+    }
+
+    #[test]
+    fn diagnostics_say_when_a_key_would_be_discarded() {
+        let mut r = row("x", "house", 120.0, "F", &Features::default());
+        r.estimated_key = Some("F major".into());
+        r.key_confidence = Some(0.08);
+        r.key_uncertain = Some(true);
+        r.matched = Some(MatchedTrack {
+            artist: "Robin S.".into(),
+            title: "Show Me Love".into(),
+            match_score: 1.0,
+            uncertain: false,
+            preview_secs: 30.0,
+            silent_fraction: 0.01,
+            tempo_alternates: Vec::new(),
+            key_alternates: vec![alt(8.0, Some("A minor (8A)"), "other", 0.774)],
+        });
+        let d = render_diagnostics(&[r]);
+        assert!(d.contains("a consumer discards this"), "{d}");
+    }
+
+    #[test]
+    fn the_table_says_whether_a_key_survives_the_uncertain_flag() {
+        let mut kept = row("kept", "house", 128.0, "", &Features::default());
+        kept.estimated_key = Some("C major".into());
+        kept.key_confidence = Some(0.9);
+        kept.key_uncertain = Some(false);
+        let mut dropped = row("dropped", "house", 128.0, "", &Features::default());
+        dropped.estimated_key = Some("C major".into());
+        dropped.key_confidence = Some(0.1);
+        dropped.key_uncertain = Some(true);
+
+        let t = render_table(&[kept, dropped]);
+        assert!(t.contains("| Key kept |"), "{t}");
+        let lines: Vec<&str> = t.lines().filter(|l| l.starts_with("| kept |")).collect();
+        assert!(lines[0].trim_end().ends_with("| yes |"), "{:?}", lines[0]);
+        let lines: Vec<&str> = t.lines().filter(|l| l.starts_with("| dropped |")).collect();
+        assert!(lines[0].trim_end().ends_with("| no |"), "{:?}", lines[0]);
+    }
+
+    #[test]
     fn a_key_disagreement_is_reported_but_does_not_gate_the_run() {
         // The case this exists for: Sandstorm's tempo lands and its key does
         // not. The run must say so and still exit zero, because the key
@@ -804,6 +998,7 @@ mod tests {
                 maturity: crate::types::Maturity::Provisional,
                 source: "test".into(),
                 alternates: Vec::new(),
+                scoring: None,
             }),
         };
         let r = row("x", "house", 128.0, "C major", &features);

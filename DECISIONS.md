@@ -680,3 +680,93 @@ pair shares its Camelot number. A key confusion of that shape costs almost
 nothing on the wheel, so a low-confidence key may still carry a usable Camelot
 position. Acting on that would mean a separate confidence for the wheel
 position, which is not worth inventing until the ground-truth set exists.
+
+## 35. Salience measures arrangement density, so it cannot gate a key (amends 34)
+
+Entry 34 predicted that real audio would settle whether Sandstorm reads B or
+reads E minor quietly enough to discard. It did neither, and the answer was more
+interesting than either branch.
+
+Ten reference tracks, then thirty-one across house, techno, trance, drum & bass,
+breaks, ambient, downtempo and disco, all with the per-factor breakdown
+attached. Two results stand out, and both say the gates were fitted to the wrong
+material.
+
+`coverage` — the fourth factor entry 34 added — reads 1.000 on thirty of the
+thirty-one, and 0.96 on the last. Real tracks measure 5.4 to 9.7 tonal pitch
+classes against a saturation of 5.5. It catches the synthetic sparse riff it was
+written for and nothing else; on real music it is inert. It stays, because the
+riff case is real, but it does no work here.
+
+The salience term — `tonality` until this entry, `structure` after it — is the
+one that bit, and it bit indiscriminately: it was the smallest factor on
+twenty-four of the thirty-one, and only four tracks survived at all.
+Salience runs 0.105 to 0.765 on real music, against a ramp from 0.15 to 0.55, so
+almost every real track sits inside it and is marked down by an amount that has
+nothing to do with whether its key is determinable.
+
+What salience actually tracks is arrangement density. Brian Eno's *An Ending*
+scores 0.765 and Aphex Twin's *Xtal* 0.430; Green Velvet's *La La Land* scores
+0.124 and Plastikman's *Spastik* 0.140. That ordering is real and correct — it
+is sparseness — but a dense club record states a key perfectly well, and a
+gate built on density discards it for being dense. The three tracks in the
+reference set with a documented key make the cost concrete: *Hey Boy Hey Girl*
+estimated D major, which is right, and was discarded at 0.20.
+
+Percussion and a dense mix are not separable by salience: measured drums sit at
+0.20-0.25 and so do *Archangel*, *Blind Faith* and *Right Here, Right Now*.
+Correlation separates them cleanly instead — a click track 0.35, four-on-the-
+floor 0.40, a breakbeat 0.43, against 0.53-0.91 for real tracks carrying
+harmony, with the percussion-led records (*Spastik* 0.304, *Phat Planet* 0.332)
+correctly at the bottom. So the correlation term takes over the job, ramped from
+0.45 rather than from zero, since all the discrimination lives in that band.
+
+The name goes with the job. A factor called `tonality` reading 1.00 on a dense
+club track invites exactly the misreading that produced this entry, so it is
+`structure` now: whether the chroma has any shape to correlate against.
+
+Salience keeps one job, which nothing else can do: white noise correlates 0.633
+with some profile, because correlation is offset-invariant and cannot see that
+the chroma is flat. Noise measures 0.005 salience against 0.105 for the least
+tonal real track — two orders of magnitude apart — so the term becomes a floor
+at 0.02, not a ramp.
+
+Two dead ends, measured, so they are not tried again. Consistency guards invert:
+a drum loop's chroma is a stable biased shape, so independent slices of a click
+track agree on a key 100% of the time while a real chord progression agrees 50%,
+each slice holding one chord. And alternative amplitude formulas — the fraction
+of energy above the floor, peak height above the floor — track the existing
+coefficient of variation almost exactly. Neither is worth swapping in.
+
+Sandstorm is unchanged and stays wrong: correlation 0.918 against 0.636 for the
+runner-up, with the published B minor third at 0.577. The chroma decisively
+believes E minor, and no confidence term reaches that. It is a limit of profile
+correlation over a 30-second preview, not a scoring defect, and it should be
+read alongside entry 31's standing caveat that published key data is itself the
+weaker half of the comparison. E minor and B minor are adjacent on the Camelot
+wheel, so the practical cost is one step.
+
+Lowering the salience floor exposed something the old one hid by accident.
+Averaging is what flattens noise, so a chroma built from a handful of frames is
+not flat, and the 0.15 floor had been rejecting that case for the wrong reason.
+Over 300 random draws the worst confidence reaches 0.89 on a fifth of a second
+against 0.09 at a second and a half, so key estimation now declines below 1.5
+seconds. Duration is the honest gate there: no threshold on a statistic
+computed from one frame can tell a real chroma from a lucky one.
+
+Seconds rather than frames, and the duration counted properly, which took two
+attempts. `Stft::for_chroma` rounds its window to a power of two, so the frame
+rate is 21.5/s at 44.1kHz but 11.7/s at 48kHz: a fixed frame count put the
+cutoff at 1.6 seconds against 3.0, and counting hops alone still put it at 1.67
+against 1.79, because the first frame costs a whole window rather than a hop
+and that window is twice as long at 48kHz. The chroma now records the audio it
+covers, window included, and the cutoff lands within 1.533-1.536s at 22.05,
+44.1, 48, 88.2 and 96kHz.
+
+Measured by seconds the rates also agree on the risk being guarded against
+(0.09 at both at the cutoff); measured by frames they differ by two to four
+times, since a 48kHz frame averages twice as many FFT bins into each pitch
+class. Duration is both the consistent gate and the fair one.
+
+Key stays provisional, and the ground-truth set entry 31 asked for still does
+not exist — thirty-one tracks measured the gates, not the answers.

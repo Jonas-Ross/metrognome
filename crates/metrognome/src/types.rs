@@ -111,6 +111,44 @@ pub struct KeyEstimate {
     pub source: String,
     /// Other plausible keys, best first.
     pub alternates: Vec<Alternate>,
+    /// How `confidence` was arrived at, factor by factor.
+    ///
+    /// Absent unless diagnostics were asked for, so the payload a consumer
+    /// sees does not carry the estimator's internals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<KeyScoring>,
+}
+
+/// The factors behind a key confidence, for diagnosing a surprising estimate.
+///
+/// `confidence` is their product, so a low one is explained by whichever term
+/// is small: nothing fits better than drums would (`strength`), two keys tie
+/// (`margin`), the chroma is flat (`structure`), or it states too few pitch
+/// classes (`coverage`). Diagnostic only — nothing in the contract depends on
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct KeyScoring {
+    /// Correlation of the winning profile.
+    pub correlation: f32,
+    /// Correlation of the runner-up.
+    pub runner_up: f32,
+    /// Chroma salience, before the structure floor is applied.
+    pub salience: f32,
+    /// Effective count of pitch classes carrying tonal energy.
+    pub tonal_pitch_classes: f32,
+    /// How well the winner fits, 0-1.
+    pub strength: f32,
+    /// How far ahead of the runner-up it is, 0-1.
+    pub margin: f32,
+    /// Whether the chroma has any structure to correlate against, 0-1. A floor
+    /// against a flat chroma, not a measure of how tonal the material is.
+    ///
+    /// The alias reads back diagnostic output captured while this was called
+    /// `tonality`, which it was for as long as it measured how tonal a clip is.
+    #[serde(alias = "tonality")]
+    pub structure: f32,
+    /// Whether enough distinct pitch classes are present to choose, 0-1.
+    pub coverage: f32,
 }
 
 /// The store track a query resolved to.

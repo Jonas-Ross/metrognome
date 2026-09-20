@@ -12,7 +12,7 @@ use crate::decode::decode_bytes;
 use crate::dsp::{onset_envelope, Stft};
 use crate::error::{Error, Result};
 use crate::fetch;
-use crate::key::{chromagram, estimate_key, KeyProfile};
+use crate::key::{chromagram, estimate_key_scored, KeyProfile};
 use crate::ratelimit::{RateLimiter, DEFAULT_BURST, DEFAULT_PER_MINUTE};
 use crate::resolve::Resolver;
 use crate::tempo::estimate_tempo;
@@ -23,6 +23,11 @@ use crate::types::{Analysis, AudioInfo, Features, Query, TrackMatch};
 pub struct AnalysisOptions {
     /// Which key profile set to correlate against.
     pub key_profile: KeyProfile,
+    /// Attach the per-factor breakdown behind the key confidence.
+    ///
+    /// Off by default: the diagnostic commands want it, a batch of three
+    /// thousand tracks does not.
+    pub explain_key_scoring: bool,
 }
 
 impl AnalysisOptions {
@@ -30,7 +35,14 @@ impl AnalysisOptions {
     /// key. Anything that changes the output must appear here, or a cache hit
     /// will serve an answer produced under different settings.
     pub fn cache_key(&self) -> String {
-        format!("key_profile={:?}", self.key_profile).to_ascii_lowercase()
+        // The breakdown is part of the stored payload, not just a rendering of
+        // it, so a row cached without it cannot serve a caller that asked for
+        // it — nor the reverse.
+        format!(
+            "key_profile={:?},explain_key_scoring={}",
+            self.key_profile, self.explain_key_scoring
+        )
+        .to_ascii_lowercase()
     }
 }
 
@@ -70,7 +82,12 @@ pub fn analyze_pcm_with(samples: &[f32], sample_rate: u32, options: &AnalysisOpt
         || {
             let stft = Stft::for_chroma(sample_rate);
             let chroma = chromagram(&stft.magnitudes(samples, sample_rate));
-            estimate_key(&chroma, options.key_profile)
+            estimate_key_scored(&chroma, options.key_profile).map(|(mut est, scoring)| {
+                if options.explain_key_scoring {
+                    est.scoring = Some(scoring);
+                }
+                est
+            })
         },
     );
     Features { tempo, key }
@@ -369,11 +386,52 @@ mod tests {
     fn the_cache_key_changes_with_anything_that_changes_the_output() {
         let a = AnalysisOptions {
             key_profile: KeyProfile::Edm,
+            ..Default::default()
         };
         let b = AnalysisOptions {
             key_profile: KeyProfile::Krumhansl,
+            ..Default::default()
         };
         assert_ne!(a.cache_key(), b.cache_key());
+    }
+
+    #[test]
+    fn the_cache_key_separates_diagnostic_rows_from_plain_ones() {
+        // A hit serves its stored payload verbatim, so a row cached without the
+        // breakdown would answer a request for it with nothing.
+        let plain = AnalysisOptions::default();
+        let explained = AnalysisOptions {
+            explain_key_scoring: true,
+            ..Default::default()
+        };
+        assert_ne!(plain.cache_key(), explained.cache_key());
+    }
+
+    #[test]
+    fn the_scoring_breakdown_is_attached_only_when_asked() {
+        let sig = crate::testsig::chord_progression(9, crate::testsig::Quality::Minor, 8.0, 44_100);
+        let plain = analyze_pcm_with(&sig, 44_100, &AnalysisOptions::default());
+        assert!(plain.key.as_ref().expect("key").scoring.is_none());
+
+        let explained = analyze_pcm_with(
+            &sig,
+            44_100,
+            &AnalysisOptions {
+                explain_key_scoring: true,
+                ..Default::default()
+            },
+        );
+        let key = explained.key.as_ref().expect("key");
+        let s = key.scoring.expect("scoring");
+        // The confidence is exactly the product of the reported factors, so a
+        // surprising number can always be attributed to one of them.
+        let product = s.strength * s.margin * s.structure * s.coverage;
+        assert!(
+            (product - key.confidence).abs() < 0.002,
+            "{product} vs {}",
+            key.confidence
+        );
+        assert!(s.correlation > s.runner_up);
     }
 
     #[test]

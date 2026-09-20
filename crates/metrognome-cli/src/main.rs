@@ -108,6 +108,12 @@ struct CommonOpts {
     /// Do not read or write the cache.
     #[arg(long)]
     no_cache: bool,
+    /// Attach the per-factor breakdown behind each key confidence.
+    ///
+    /// For working out why a key scored the way it did over an arbitrary set
+    /// of tracks, which the fixed reference set of `validate` cannot cover.
+    #[arg(long)]
+    explain_key: bool,
     /// Origin for the iTunes API. Hidden: it exists so the test suite can point
     /// the binary at a local stand-in, and so a network problem can be
     /// reproduced against a proxy.
@@ -133,11 +139,20 @@ impl CommonOpts {
         self.analyzer_with(self.fresh_config()?)
     }
 
-    /// [`Self::config`] with the analysis cache switched off.
+    /// [`Self::config`] with the analysis cache switched off and the key
+    /// scoring breakdown switched on.
+    ///
+    /// Only the diagnostic commands take this path, which is exactly where the
+    /// breakdown is wanted and where a cache would hide it.
     fn fresh_config(&self) -> Result<AnalyzerConfig> {
+        let config = self.config()?;
         Ok(AnalyzerConfig {
             cache_path: None,
-            ..self.config()?
+            analysis: AnalysisOptions {
+                explain_key_scoring: true,
+                ..config.analysis
+            },
+            ..config
         })
     }
 
@@ -163,6 +178,7 @@ impl CommonOpts {
             burst: self.burst,
             analysis: AnalysisOptions {
                 key_profile: self.key_profile,
+                explain_key_scoring: self.explain_key,
             },
             cache_path,
         })
@@ -258,8 +274,13 @@ async fn main() -> Result<()> {
             sample_rate,
             key_profile,
         } => {
-            let rows =
-                metrognome::validate::selftest(sample_rate, &AnalysisOptions { key_profile });
+            let rows = metrognome::validate::selftest(
+                sample_rate,
+                &AnalysisOptions {
+                    key_profile,
+                    explain_key_scoring: true,
+                },
+            );
             report(&rows)?;
         }
 
@@ -307,6 +328,13 @@ fn report(rows: &[metrognome::validate::ValidationRow]) -> Result<()> {
             "key:   {} of {} agreed (provisional, does not gate)",
             summary.key_agreed, summary.key_checked
         );
+    }
+    // Every row that produced a key, failure or not: a low confidence on a
+    // track carrying no expected key is not a failure but is still the thing
+    // worth reading.
+    let scoring = metrognome::validate::render_key_scoring(rows);
+    if !scoring.is_empty() {
+        eprintln!("\nkey scoring\n{scoring}");
     }
     // The table says which rows are wrong; this says what they were wrong
     // about. Failures only — a passing row needs no explaining.
@@ -478,6 +506,26 @@ mod tests {
         let mut argv = vec!["metrognome"];
         argv.extend_from_slice(args);
         Wrapper::parse_from(argv).opts
+    }
+
+    #[test]
+    fn explain_key_is_off_unless_asked_and_always_on_for_diagnostics() {
+        assert!(!opts(&[]).config().unwrap().analysis.explain_key_scoring);
+        assert!(
+            opts(&["--explain-key"])
+                .config()
+                .unwrap()
+                .analysis
+                .explain_key_scoring
+        );
+        // `validate` and `selftest` want it regardless of the flag.
+        assert!(
+            opts(&[])
+                .fresh_config()
+                .unwrap()
+                .analysis
+                .explain_key_scoring
+        );
     }
 
     #[test]
