@@ -64,7 +64,7 @@ moving existing ones.
       "confidence": 0.79,
       "uncertain": false,
       "maturity": "provisional",
-      "source": "metrognome/chroma-correlation-edm@1",
+      "source": "metrognome/chroma-correlation-edm@2",
       "alternates": [
         { "value": 8.0, "label": "C major (8B)", "relation": "relative_major", "score": 0.681 }
       ]
@@ -146,6 +146,12 @@ diagnosed, but only tempo decides the exit status.
 
 Every estimate carries a 0-1 confidence. Previews are sometimes a beatless intro
 or a breakdown, and a low confidence score is the estimator telling you so.
+
+For key, confidence measures how determined the key is, not how neatly a profile
+fits. A clip has to state enough distinct pitch classes to choose between keys:
+a riff on two or three, or a run of fifths with no third in them, scores near
+zero however cleanly it correlates. Confidence does not reach 1.0 — chroma
+correlation over a 30-second clip cannot earn certainty.
 
 Two commands check accuracy, and both print a markdown table to **stderr** with
 a machine-readable report on stdout:

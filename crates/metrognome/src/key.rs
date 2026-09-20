@@ -46,8 +46,8 @@ impl KeyProfile {
 
     fn source(self) -> &'static str {
         match self {
-            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@1",
-            KeyProfile::Edm => "metrognome/chroma-correlation-edm@1",
+            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@2",
+            KeyProfile::Edm => "metrognome/chroma-correlation-edm@2",
         }
     }
 
@@ -117,6 +117,29 @@ impl Chromagram {
             .sum::<f32>()
             / 12.0;
         var.sqrt() / mean
+    }
+
+    /// Effective number of pitch classes carrying tonal energy.
+    ///
+    /// The other thing profile correlation cannot see: a key is seven pitch
+    /// classes, so a riff on three fits many profiles equally and the gap
+    /// between them is not evidence. Percussion adds roughly equal energy to
+    /// all twelve, so the level every class shares is subtracted first —
+    /// otherwise drums lift the count and a sparse riff over a beat reads as
+    /// fully stated. Diatonic progressions measure 5-7, a two-chord vamp near
+    /// 5, a three-note riff under 4.
+    pub fn tonal_pitch_classes(&self) -> f32 {
+        let pedestal = self.bins.iter().copied().fold(f32::INFINITY, f32::min);
+        let total: f32 = self.bins.iter().map(|v| v - pedestal).sum();
+        if total <= 1e-9 {
+            return 0.0;
+        }
+        // Inverse participation ratio: 1/sum(p^2) over the normalized shares.
+        1.0 / self
+            .bins
+            .iter()
+            .map(|v| ((v - pedestal) / total).powi(2))
+            .sum::<f32>()
     }
 }
 
@@ -208,11 +231,14 @@ fn correlate(chroma: &[f32; 12], profile: &[f32; 12], tonic: usize) -> f32 {
 /// 0.75 is about what an unambiguous tonal centre reaches.
 const KEY_CORRELATION_SATURATION: f32 = 0.75;
 
-/// Correlation gap at which the winner is considered clearly ahead.
+/// Correlation lead, as a fraction of the winner's own correlation, at which
+/// the margin term reaches 1/e of the way to 1.
 ///
-/// Relative major/minor pairs share six of seven notes, so they routinely sit
-/// within 0.05 of each other. A tenth is a real separation.
-const KEY_MARGIN_SATURATION: f32 = 0.10;
+/// Relative major/minor pairs share six of seven notes and routinely lead by
+/// under 0.10 of the winner; clean single-key material leads by 0.17-0.40. The
+/// term saturates exponentially rather than clamping, so a clear winner never
+/// quite reaches certainty and a close one is not rounded up to it.
+const KEY_MARGIN_SCALE: f32 = 0.10;
 
 /// Chroma salience below which a clip is treated as having no tonal content.
 ///
@@ -226,6 +252,18 @@ const TONALITY_FLOOR: f32 = 0.15;
 /// both, so heavy percussion is not penalized but a drums-only clip cannot
 /// climb out.
 const TONALITY_SATURATION: f32 = 0.55;
+
+/// Tonal pitch classes below which a chroma cannot name a key at all.
+///
+/// Around a triad's worth: enough to fit a profile, not enough to choose
+/// between the profiles that fit. See [`Chromagram::tonal_pitch_classes`].
+const COVERAGE_FLOOR: f32 = 3.5;
+
+/// Tonal pitch classes at which the key is fully determined.
+///
+/// A diatonic progression exercises 5-7; every synthetic key lands at 5.0 or
+/// above, so a real progression is not penalized for stopping short of seven.
+const COVERAGE_SATURATION: f32 = 5.5;
 
 /// How `other` relates to the chosen key, for the alternates list.
 fn relation(tonic: usize, minor: bool, other_tonic: usize, other_minor: bool) -> &'static str {
@@ -269,16 +307,27 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
         return None;
     }
 
+    // Linear rather than softened by a root: a weak best fit is exactly where
+    // the relative margin below turns a small absolute lead into a large one,
+    // so this is the term that has to bite. Above the saturation it clamps to
+    // 1.0, so real material is unaffected either way.
     let strength = (r1 / KEY_CORRELATION_SATURATION).clamp(0.0, 1.0);
-    let margin = ((r1 - r2) / KEY_MARGIN_SATURATION).clamp(0.0, 1.0);
-    // A gate rather than another factor: below the floor there is nothing
-    // tonal to have an opinion about, however well the profiles happen to fit.
+    // Relative to the winner, so a lead of 0.05 over a correlation of 0.95
+    // counts for less than the same lead over 0.30.
+    let margin = 1.0 - (-((r1 - r2) / r1) / KEY_MARGIN_SCALE).exp();
+    // Gates on the chroma itself: below the salience floor there is nothing
+    // tonal to have an opinion about, and below the coverage floor not enough
+    // of it to choose a key from, however well the profiles happen to fit.
     let tonality = ((chroma.salience() - TONALITY_FLOOR) / (TONALITY_SATURATION - TONALITY_FLOOR))
         .clamp(0.0, 1.0);
-    // Strength and margin neither substitute for the other: a strong
-    // correlation that ties with the relative minor is still a coin flip, and a
-    // clear winner among uniformly weak correlations is noise.
-    let confidence = crate::types::normalize_confidence(strength.sqrt() * margin.sqrt() * tonality);
+    let coverage = ((chroma.tonal_pitch_classes() - COVERAGE_FLOOR)
+        / (COVERAGE_SATURATION - COVERAGE_FLOOR))
+        .clamp(0.0, 1.0);
+    // No factor substitutes for another: a correlation that ties with the
+    // relative minor is a coin flip, a clear winner among weak correlations is
+    // noise, and a clear winner over three pitch classes is a riff several keys
+    // would claim.
+    let confidence = crate::types::normalize_confidence(strength * margin * tonality * coverage);
 
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
@@ -444,6 +493,209 @@ mod tests {
         // arithmetic: a relative key shares its number with the chosen one.
         assert_eq!(rel.value, 8.0);
         assert!(est.camelot.starts_with('8'));
+    }
+
+    /// Mix a tonal signal with percussion at the given relative levels.
+    fn over_drums(tonal: &[f32], tonal_gain: f32, drum_gain: f32) -> Vec<f32> {
+        let drums = testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor);
+        tonal
+            .iter()
+            .zip(&drums)
+            .map(|(t, d)| t * tonal_gain + d * drum_gain)
+            .collect()
+    }
+
+    /// A lead riff on three pitch classes: E, G, B.
+    fn three_note_riff() -> Vec<f32> {
+        testsig::note_sequence(
+            &[&[64.0], &[71.0], &[67.0], &[64.0], &[71.0], &[67.0]],
+            12.0,
+            SR,
+        )
+    }
+
+    /// Fifths with no third, so nothing in the clip states a mode.
+    fn power_chords() -> Vec<f32> {
+        let e5: [f32; 4] = [40.0, 47.0, 52.0, 59.0];
+        let b5: [f32; 4] = [47.0, 54.0, 59.0, 66.0];
+        testsig::note_sequence(&[&e5, &b5, &e5, &b5], 12.0, SR)
+    }
+
+    #[test]
+    fn a_riff_on_three_pitch_classes_is_not_a_confident_key() {
+        // The regression this guards: correlation happily fits a profile to a
+        // chroma with nine near-empty bins, and used to report it at 1.00.
+        for (name, sig) in [
+            ("riff", three_note_riff()),
+            ("riff over drums", over_drums(&three_note_riff(), 1.0, 0.8)),
+            (
+                "riff over loud drums",
+                over_drums(&three_note_riff(), 0.8, 1.5),
+            ),
+            ("power chords", power_chords()),
+            (
+                "power chords over drums",
+                over_drums(&power_chords(), 1.0, 0.8),
+            ),
+            (
+                "power chords over loud drums",
+                over_drums(&power_chords(), 0.8, 1.5),
+            ),
+        ] {
+            let est = key_of(&sig, KeyProfile::Edm).expect("key");
+            assert!(
+                est.uncertain,
+                "{name} read as a confident {} at {}",
+                est.key, est.confidence
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_pitch_class_yields_no_usable_key() {
+        for (name, groups) in [
+            ("drone", vec![vec![57.0f32], vec![57.0]]),
+            ("bare fifth", vec![vec![57.0, 64.0], vec![57.0, 64.0]]),
+        ] {
+            let refs: Vec<&[f32]> = groups.iter().map(|g| g.as_slice()).collect();
+            let sig = testsig::note_sequence(&refs, 12.0, SR);
+            let est = key_of(&sig, KeyProfile::Edm).expect("key");
+            assert_eq!(est.confidence, 0.0, "{name}: {est:?}");
+            assert!(est.uncertain, "{name}: {est:?}");
+        }
+    }
+
+    #[test]
+    fn material_that_fits_no_key_well_is_not_confident() {
+        // Symmetric harmony divides the octave evenly, so it sits far from
+        // every profile while still being loud, varied and spread across the
+        // chroma — it clears the salience and coverage gates on its own. Only
+        // the correlation term stands between it and a confident answer.
+        let wt1: [f32; 3] = [60.0, 64.0, 68.0];
+        let wt2: [f32; 3] = [62.0, 66.0, 70.0];
+        let dim1: [f32; 4] = [60.0, 63.0, 66.0, 69.0];
+        let dim2: [f32; 4] = [61.0, 64.0, 67.0, 70.0];
+        for (name, sig) in [
+            (
+                "whole-tone chords",
+                testsig::note_sequence(&[&wt1, &wt2, &wt1, &wt2], 12.0, SR),
+            ),
+            (
+                "diminished sevenths",
+                testsig::note_sequence(&[&dim1, &dim2, &dim1, &dim2], 12.0, SR),
+            ),
+        ] {
+            let est = key_of(&sig, KeyProfile::Edm).expect("key");
+            assert!(
+                est.uncertain,
+                "{name} read as a confident {} at {}",
+                est.key, est.confidence
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_pair_coin_flip_is_not_confident() {
+        // C major and A minor triads alternating: both keys fit the chroma, and
+        // nothing summed over a whole clip says which one is home.
+        let c: [f32; 4] = [48.0, 52.0, 55.0, 60.0];
+        let am: [f32; 4] = [45.0, 48.0, 52.0, 57.0];
+        let sig = testsig::note_sequence(&[&c, &am, &c, &am], 12.0, SR);
+        let est = key_of(&sig, KeyProfile::Edm).expect("key");
+        assert!(est.uncertain, "coin flip read as confident: {est:?}");
+    }
+
+    #[test]
+    fn no_synthetic_key_reaches_full_confidence() {
+        // Chroma correlation over a 30-second clip cannot earn certainty, so
+        // 1.00 must stay out of reach even on noiseless single-key material.
+        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+            for pc in 0..12u8 {
+                for quality in [Quality::Major, Quality::Minor] {
+                    let sig = testsig::chord_progression(pc, quality, 8.0, SR);
+                    let est = key_of(&sig, profile).expect("key");
+                    assert!(
+                        est.confidence < 1.0,
+                        "{profile:?} {} reported certainty",
+                        est.key
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_clean_key_stays_confident_on_both_profile_sets() {
+        // The other half of the bargain: tightening confidence must not flag a
+        // clean, unambiguous progression as a hint.
+        let mut weak = Vec::new();
+        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+            for pc in 0..12u8 {
+                for (quality, mode) in [(Quality::Major, "major"), (Quality::Minor, "minor")] {
+                    let sig = testsig::chord_progression(pc, quality, 8.0, SR);
+                    let est = key_of(&sig, profile).expect("key");
+                    if est.uncertain {
+                        weak.push(format!(
+                            "{profile:?} {} {mode} = {}",
+                            PITCH_NAMES[usize::from(pc)],
+                            est.confidence
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            weak.is_empty(),
+            "{} of 48 flagged uncertain: {weak:#?}",
+            weak.len()
+        );
+    }
+
+    #[test]
+    fn tonal_pitch_classes_ignores_the_pedestal_percussion_adds() {
+        let stft = Stft::for_chroma(SR);
+        let count = |sig: &[f32]| chromagram(&stft.magnitudes(sig, SR)).tonal_pitch_classes();
+
+        let prog = testsig::chord_progression(4, Quality::Minor, 12.0, SR);
+        let riff = three_note_riff();
+        assert!(count(&prog) > COVERAGE_SATURATION, "{}", count(&prog));
+        assert!(count(&riff) < COVERAGE_FLOOR + 0.5, "{}", count(&riff));
+
+        // Drums spread energy over all twelve classes. Without the pedestal
+        // subtraction this is what let a riff over a beat look fully stated.
+        let dry = count(&riff);
+        let wet = count(&over_drums(&riff, 1.0, 0.8));
+        assert!(
+            wet - dry < 1.0,
+            "percussion moved the count from {dry} to {wet}"
+        );
+    }
+
+    #[test]
+    fn confidence_tracks_how_far_ahead_the_winner_is() {
+        // A two-chord vamp states fewer pitch classes than a four-chord
+        // progression and must not claim as much.
+        let am: [f32; 4] = [45.0, 48.0, 52.0, 57.0];
+        let f: [f32; 4] = [41.0, 45.0, 48.0, 53.0];
+        let vamp = key_of(
+            &testsig::note_sequence(&[&am, &f, &am, &f], 12.0, SR),
+            KeyProfile::Edm,
+        )
+        .expect("key");
+        let prog = key_of(
+            &testsig::chord_progression(9, Quality::Minor, 12.0, SR),
+            KeyProfile::Edm,
+        )
+        .expect("key");
+        assert_eq!(vamp.key, "A minor");
+        assert_eq!(prog.key, "A minor");
+        assert!(!vamp.uncertain, "vamp: {vamp:?}");
+        assert!(
+            vamp.confidence < prog.confidence,
+            "vamp {} should trail progression {}",
+            vamp.confidence,
+            prog.confidence
+        );
     }
 
     #[test]

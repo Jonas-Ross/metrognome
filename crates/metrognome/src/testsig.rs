@@ -230,6 +230,27 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
     out
 }
 
+/// Sustained groups of MIDI notes played in sequence, one group per slot.
+///
+/// Companion to [`chord_progression`] for material that deliberately states too
+/// few pitch classes to fix a key — a two-note riff, a bare fifth, a drone.
+pub fn note_sequence(groups: &[&[f32]], secs: f32, sample_rate: u32) -> Vec<f32> {
+    let n = (secs * sample_rate as f32) as usize;
+    let mut out = vec![0.0f32; n];
+    if groups.is_empty() {
+        return out;
+    }
+    let slot = secs / groups.len() as f32;
+    for (i, group) in groups.iter().enumerate() {
+        let at = (i as f32 * slot * sample_rate as f32) as usize;
+        for &note in group.iter() {
+            let t = tone(midi_to_hz(note), slot, sample_rate, 0.22);
+            mix_at(&mut out, &t, at);
+        }
+    }
+    out
+}
+
 /// Triad quality for [`chord_progression`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quality {
