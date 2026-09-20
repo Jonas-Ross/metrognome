@@ -70,7 +70,7 @@ pub struct Alternate {
 
 /// The factors behind a tempo confidence, plus the raw inputs they came from.
 ///
-/// Diagnostic only, and outside the JSON contract. See DECISIONS.md entry 35.
+/// Diagnostic only, and outside the JSON contract. See DECISIONS.md entry 36.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TempoConfidenceFactors {
     /// How far above background the chosen grid's beats sit, saturating.

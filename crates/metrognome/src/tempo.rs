@@ -416,6 +416,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // The strongest reading that is not just the chosen tempo re-expressed.
     // `None` is the most confident case, not the least; a default of zero would
     // read as a rival beating a winner whose own score is negative.
+    // Counts a 3/2 or 4/3 competitor as a restatement, so four of ten reference
+    // tracks take full marks here unearned — DECISIONS.md entry 36.
     let rival = scored[1..]
         .iter()
         .find(|c| !metrically_related(c.bpm, best.bpm))
@@ -525,9 +527,8 @@ const COVERAGE_SATURATION: f32 = 32.0;
 /// score well because whatever it found was unrivalled. `gap` is the winner's
 /// score over the best unrelated reading, `None` when there is none.
 ///
-/// `clarity` is not scale-free despite its z-scored units: the envelope is
-/// normalized by the clip's own activity, so a busy mix sinks its own beats.
-/// See DECISIONS.md entry 35.
+/// `None` for `gap` therefore reads as full marks, which on real previews is
+/// where the unearned confidence lives. See DECISIONS.md entry 36.
 fn confidence(
     mean: f32,
     sd: f32,
@@ -827,7 +828,7 @@ mod tests {
     fn a_busier_mix_costs_confidence_at_an_unchanged_tempo() {
         // Recorded defect, not desired behaviour: the clutter never lands on a
         // beat, so the grid is identical and only the clip's activity rises.
-        // A recalibration is expected to move this; DECISIONS.md entry 35.
+        // A recalibration is expected to move this; DECISIONS.md entry 36.
         let clean = testsig::groove(120.0, 30.0, SR, Groove::FourOnFloor);
         let mut busy = clean.clone();
         testsig::add_offgrid_clutter(&mut busy, 120.0, SR, 7, 0.6);
