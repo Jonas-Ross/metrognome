@@ -746,5 +746,14 @@ read alongside entry 31's standing caveat that published key data is itself the
 weaker half of the comparison. E minor and B minor are adjacent on the Camelot
 wheel, so the practical cost is one step.
 
+Lowering the salience floor exposed something the old one hid by accident.
+Averaging is what flattens noise, so a chroma built from a handful of frames is
+not flat, and the 0.15 floor had been rejecting that case for the wrong reason.
+Over 399 random draws the worst confidence reaches 0.89 at one frame and 0.75
+at three, against 0.09 at thirty-two — so key estimation now declines below
+thirty-two frames, about 1.5 seconds. Duration is the honest gate there: no
+threshold on a statistic computed from one frame can tell a real chroma from a
+lucky one.
+
 Key stays provisional, and the ground-truth set entry 31 asked for still does
 not exist — thirty-one tracks measured the gates, not the answers.

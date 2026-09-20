@@ -264,6 +264,15 @@ const STRUCTURE_FLOOR: f32 = 0.02;
 /// and a dense club mix 0.15, and both can state a key perfectly well.
 const STRUCTURE_SATURATION: f32 = 0.10;
 
+/// Chroma frames below which no key is named, however well a profile fits.
+///
+/// Averaging is what flattens noise, so a chroma built from a handful of
+/// frames is not flat: over 399 random draws the worst confidence reaches 0.89
+/// at one frame and 0.75 at three, against 0.09 at thirty-two. The chroma
+/// window is sized in seconds, so this is about 1.5s at any sample rate, and a
+/// 30-second preview clears it six hundred times over.
+const MIN_CHROMA_FRAMES: usize = 32;
+
 /// Tonal pitch classes below which a chroma cannot name a key at all.
 ///
 /// Around a triad's worth: enough to fit a profile, not enough to choose
@@ -313,7 +322,7 @@ pub fn estimate_key_scored(
     chroma: &Chromagram,
     profile: KeyProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
-    if chroma.frames == 0 {
+    if chroma.frames < MIN_CHROMA_FRAMES {
         return None;
     }
     let (major, minor) = profile.profiles();
@@ -814,6 +823,26 @@ mod tests {
         }
         let chords = best(&testsig::chord_progression(9, Quality::Minor, 16.0, SR));
         assert!(chords > KEY_CORRELATION_SATURATION, "chords {chords}");
+    }
+
+    #[test]
+    fn a_clip_too_short_to_average_names_no_key() {
+        // Noise over a few frames has not been flattened yet, so the salience
+        // floor does not catch it and a random chroma shape correlates as well
+        // as anything. Confidence reached 0.89 on one frame before this guard.
+        let stft = Stft::for_chroma(SR);
+        for frames in [1usize, 2, 3, 8, MIN_CHROMA_FRAMES - 1] {
+            let samples = 8192 + (frames - 1) * 2048;
+            for seed in 1..40u32 {
+                let mut g = testsig::Noise::new(seed);
+                let sig: Vec<f32> = (0..samples).map(|_| g.next_sample() * 0.3).collect();
+                let chroma = chromagram(&stft.magnitudes(&sig, SR));
+                assert!(
+                    estimate_key_scored(&chroma, KeyProfile::Edm).is_none(),
+                    "{frames} frames, seed {seed} produced a key"
+                );
+            }
+        }
     }
 
     #[test]
