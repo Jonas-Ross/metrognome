@@ -347,23 +347,6 @@ fn candidates(env: &OnsetEnvelope) -> (Vec<f32>, Vec<f32>) {
     (out, acf)
 }
 
-/// True when `a` and `b` are related by a simple metric ratio.
-///
-/// A candidate at half the chosen tempo is the same musical answer seen
-/// differently, so it is not a competing reading for confidence.
-fn metrically_related(a: f32, b: f32) -> bool {
-    const RATIOS: [f32; 7] = [0.5, 2.0, 2.0 / 3.0, 3.0 / 2.0, 3.0 / 4.0, 4.0 / 3.0, 1.0];
-    // Compared in log space, where a tolerance means the same thing in both
-    // directions. The ratio set is closed under reciprocal, so this makes the
-    // relation symmetric; an absolute window on `a / b` does not, and made a
-    // tempo's own double read as an unrelated rival from one side only.
-    if a <= 0.0 || b <= 0.0 {
-        return false;
-    }
-    let d = (a / b).ln();
-    RATIOS.iter().any(|r| (d - r.ln()).abs() < 0.03)
-}
-
 /// What failing to explain all the onset energy costs at one metrical level, in
 /// envelope standard deviations.
 ///
@@ -429,14 +412,13 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     }
     let best = scored[0];
 
-    // The strongest reading that is not just the chosen tempo re-expressed.
-    // `None` is the most confident case, not the least; a default of zero would
+    // The strongest reading at a different tempo; a 3/2 or 4/3 neighbour counts,
+    // because that is the confusion `Verdict::MetricError` exists to catch.
+    // `None` is the most confident case, not the least: a default of zero would
     // read as a rival beating a winner whose own score is negative.
-    // Counts a 3/2 or 4/3 competitor as a restatement, so four of ten reference
-    // tracks take full marks here unearned — DECISIONS.md entry 36.
     let rival = scored[1..]
         .iter()
-        .find(|c| !metrically_related(c.bpm, best.bpm))
+        .find(|c| (c.bpm - best.bpm).abs() >= 0.5)
         .map(|c| c.score);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
@@ -873,6 +855,20 @@ mod tests {
     }
 
     #[test]
+    fn a_metric_neighbour_counts_against_confidence() {
+        // A click track's only rivals sit at 4/3 and 3/4 of it, which used to be
+        // filtered out as the same answer restated, so it reported no rival.
+        let est = tempo_of(&testsig::click_track(128.0, 30.0, SR));
+        let gap = est
+            .confidence_factors
+            .as_ref()
+            .expect("factors")
+            .rival_gap
+            .expect("a metric neighbour is a rival, not a restatement");
+        assert!(gap > 1.0, "gap {gap}");
+    }
+
+    #[test]
     fn a_grid_with_no_beat_under_it_reports_nothing() {
         // Clarity has to veto on its own: no amount of periodicity, coverage or
         // absent competition may lift a grid that sits at background level.
@@ -920,40 +916,6 @@ mod tests {
                 est.bpm
             );
         }
-    }
-
-    #[test]
-    fn metric_relations_are_symmetric_across_the_window() {
-        // Asymmetry here does not change which tempo wins, only how sure the
-        // tool says it is: a winner near the bottom of the window whose double
-        // reads as unrelated gets its margin — and so its confidence — cut on
-        // an answer with no real competitor.
-        // A full grid, not exact multiples: on an exact ratio both the old
-        // form and this one agree, so a sweep of doubles and halves would pass
-        // against the bug. The disagreement lives just off the ratios.
-        let mut a = CANONICAL_LOW_BPM;
-        while a < CANONICAL_HIGH_BPM {
-            let mut b = SEARCH_MIN_BPM;
-            while b < 200.0 {
-                assert_eq!(
-                    metrically_related(a, b),
-                    metrically_related(b, a),
-                    "{a} vs {b}"
-                );
-                b += 0.5;
-            }
-            a += 0.5;
-        }
-        assert!(!metrically_related(174.0, 91.0));
-        assert!(!metrically_related(91.0, 174.0));
-    }
-
-    #[test]
-    fn metric_relations_are_recognized() {
-        assert!(metrically_related(174.0, 87.0));
-        assert!(metrically_related(124.0, 124.0));
-        assert!(metrically_related(120.0, 180.0));
-        assert!(!metrically_related(124.0, 140.0));
     }
 
     #[test]
