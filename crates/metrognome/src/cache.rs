@@ -202,6 +202,7 @@ mod tests {
                     beat_offset_secs: 0.1,
                     canonical_window_bpm: [90.0, 180.0],
                     alternates: vec![],
+                    confidence_factors: Default::default(),
                 }),
                 key: None,
             },
