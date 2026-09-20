@@ -770,3 +770,69 @@ class. Duration is both the consistent gate and the fair one.
 
 Key stays provisional, and the ground-truth set entry 31 asked for still does
 not exist — thirty-one tracks measured the gates, not the answers.
+
+## 36. Tempo confidence ranks production density; the recalibration waits on measurements
+
+The 2026-09-20 validate run on real previews put all ten reference tempos within
+0.1 BPM and reported confidences from 0.09 to 0.95. Brown Paper Bag read 170.03
+against a published 170 and scored 0.09; Born Slippy read 140.09 against 140 and
+scored 0.34. `UNCERTAIN_AT_OR_BELOW` is 0.5, so three correct answers out of ten
+were flagged uncertain and would be discarded by a consumer. Tempo is the
+validated feature. A confidence that throws away a third of a perfect run is
+worse than no confidence at all.
+
+Ordering the ten tracks by the best score in their own alternates list ranks them
+in exactly the order of their confidence, all ten, no exceptions: the four-on-the-
+floor house tracks at the top with half and double scoring above zero, then big
+beat, then the two drum & bass tracks with hard kicks, then the three whose
+previews are continuously busy — Sandstorm's sixteenth-note lead, Born Slippy's
+clattering offbeat riff, Brown Paper Bag's dense jazz break — at the bottom with
+every alternate below -1.6. Confidence tracks the absolute level of the comb
+score field and is indifferent to the gaps within it. Inner City Life settles
+that: its runner-up is the closest of the ten at -1.265, and it still scores
+0.870, where Brown Paper Bag's runner-up is a distant -3.338 and scores 0.089.
+
+The mechanism is `clarity`, which carries the heaviest exponent at 0.5. The onset
+envelope is normalized to unit variance over the clip, so "standard deviations
+above background" means above *this clip's own* average activity. A mix with
+something happening on every sixteenth raises that denominator itself, and its
+beats read as unremarkable however plainly they are there. Entry 30 excluded
+`score` from confidence for being genre-dependent; `clarity` is genre-dependent
+for the same reason and was kept.
+
+Taking the other factors anywhere inside the range observed across 24 measured
+synthetic cases, Brown Paper Bag's mean onset strength on its own beat grid comes
+out under 0.13 standard deviations, against 2.1 and up for the house tracks.
+`clarity` is the dominant term under every combination, so this is not a guess
+about which factor fired.
+
+What is not settled is the replacement, and this entry deliberately stops short
+of one. `pulse_strength` is the obvious candidate — it already exists, and its
+doc comment already claims the job of catching the clip that has no beat — but it
+is `raw_sd / raw_mean` on the un-normalized flux, so a busier clip lowers it too:
+across one clutter sweep it fell from 4.13 to 1.15 while `mean` fell from 5.80 to
+1.49. It is the same measurement in different units. The only genuinely
+density-free factor available is `periodic`, the normalized autocorrelation at
+the chosen lag, and it sat at exactly 1.000 in nearly every case measured, so
+leaning on it would make confidence nearly constant. The leading untested idea is
+a contrast — on-grid against off-grid onset energy — which is a ratio and so
+immune to the clip's overall level by construction.
+
+Choosing between those needs the factor values on real previews, and the run that
+would supply them cannot: the alternates report every loser's score and never the
+winner's, so the margin cannot be recovered from the output, and `mean`, `sd` and
+the autocorrelation never leave the scorer. Worse, `render_diagnostics` only
+emitted a block for a row that *failed*, and every tempo passed, so the run that
+exposed the problem printed no tempo diagnostics at all.
+
+So this change measures and reports, and changes no estimate. The five factors
+and their raw inputs travel on the estimate and print per track; a row whose
+tempo landed but is flagged uncertain now gets a diagnostics block and a count of
+its own, because a correct answer nobody keeps is a failure of the same run. No
+`ALGORITHM_VERSION` bump: no DSP behaviour moved. No `SCHEMA_VERSION` bump
+either — the factors are `skip_serializing`, so the consumer contract is byte for
+byte what it was. Recalibrating is the follow-up, against numbers rather than
+against a synthetic suite that cannot see the problem: on 24 synthetic cases
+`clarity`, `margin` and `coverage` were pinned at exactly 1.000 and confidence
+never left 0.77 to 0.999, which is why entry 34's fix had to be corrected on
+contact with real audio and why this one is not being attempted blind.
