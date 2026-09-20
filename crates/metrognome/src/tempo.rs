@@ -8,7 +8,7 @@ use crate::types::{
 };
 
 /// Identifier recorded on every tempo estimate.
-pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@1";
+pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@2";
 
 /// Tempo is checked against published references that agree across sources and
 /// passes every verified case. DECISIONS.md entries 31 and 32.
@@ -158,8 +158,7 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> Option<CombScore> {
             // downbeat and a weak one exceeds the level itself — which is why
             // the miss penalty is subtracted rather than multiplied in.
             let precision = mean - CONSISTENCY_PENALTY * sd;
-            let missed = 1.0 - recall(env, fps, period, phase, total);
-            let score = precision - MISS_PENALTY * missed;
+            let score = precision - MISS_PENALTY * missed(env, fps, period, phase, total);
             best = Some(CombScore {
                 score,
                 mean,
@@ -171,30 +170,39 @@ fn comb_score(env: &[f32], fps: f32, bpm: f32) -> Option<CombScore> {
     best
 }
 
-/// Share of the envelope's onset energy that falls on this grid.
+/// Onset energy this grid's metrical lattice leaves unexplained, summed over
+/// [`LATTICE_DIVISORS`] levels.
 ///
 /// Precision punishes a grid that is too fast but not one that is too slow:
 /// sampling every third beat of a groove posts a high mean and tight spread
-/// precisely by skipping the beats that would have cost it.
-fn recall(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
+/// precisely by skipping the beats that would have cost it. One pass over the
+/// envelope: the levels share a phase, so a frame's position on each is the
+/// same beat coordinate scaled.
+fn missed(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
+    const LEVELS: usize = LATTICE_DIVISORS.len();
     if total <= 0.0 {
-        return 0.0;
+        return LEVELS as f32;
     }
     let half_width = EXPLAIN_HALF_WIDTH_SECS * fps;
-    let mut captured = 0.0f32;
+    let mut captured = [0.0f32; LEVELS];
     for (i, v) in env.iter().enumerate() {
         let v = v.max(0.0);
         if v <= 0.0 {
             continue;
         }
-        // Distance to the nearest grid line, in frames.
         let beats = (i as f32 - phase) / period;
-        let dist = (beats - beats.round()).abs() * period;
-        if dist <= half_width {
-            captured += v;
+        for (c, d) in captured.iter_mut().zip(LATTICE_DIVISORS) {
+            // Distance to the nearest line of this level, in frames.
+            let at = beats * d;
+            if (at - at.round()).abs() * (period / d) <= half_width {
+                *c += v;
+            }
         }
     }
-    (captured / total).clamp(0.0, 1.0)
+    captured
+        .iter()
+        .map(|c| 1.0 - (c / total).clamp(0.0, 1.0))
+        .sum()
 }
 
 /// A beat grid's fit at one tempo.
@@ -356,13 +364,21 @@ fn metrically_related(a: f32, b: f32) -> bool {
     RATIOS.iter().any(|r| (d - r.ln()).abs() < 0.03)
 }
 
-/// What failing to explain all the onset energy costs, in envelope standard
-/// deviations.
+/// What failing to explain all the onset energy costs at one metrical level, in
+/// envelope standard deviations.
 ///
 /// At 3.0 a grid skipping a third of a groove gives up about one sd, the same
 /// order as the consistency penalty, so the two trade rather than one swamping
-/// the other.
+/// the other. Charged once per [`LATTICE_DIVISORS`] level.
 const MISS_PENALTY: f32 = 3.0;
+
+/// Metrical levels the miss penalty is charged at, as divisors of the beat
+/// period: the beat, its eighths and its sixteenths.
+///
+/// The beat alone goes flat on sixteenth-dense material, where every candidate
+/// explains under 0.2 of the energy. A wrong grid's subdivisions fall between
+/// the real ones, so the lower levels still separate it. DECISIONS.md entry 37.
+const LATTICE_DIVISORS: [f32; 3] = [1.0, 2.0, 4.0];
 
 /// Half-width of the window in which a beat counts as explaining an onset.
 ///
@@ -828,30 +844,32 @@ mod tests {
     }
 
     #[test]
-    fn a_busier_mix_costs_confidence_at_an_unchanged_tempo() {
-        // Recorded defect, not desired behaviour: the clutter never lands on a
-        // beat, so the grid is identical and only the clip's activity rises.
-        // A recalibration is expected to move this; DECISIONS.md entry 36.
+    fn clutter_between_the_beats_barely_costs_confidence() {
+        // The clutter never lands on a beat, so the grid is identical and only
+        // the clip's activity rises.
         let clean = testsig::groove(120.0, 30.0, SR, Groove::FourOnFloor);
         let mut busy = clean.clone();
-        testsig::add_offgrid_clutter(&mut busy, 120.0, SR, 7, 0.6);
+        testsig::add_offgrid_clutter(&mut busy, 120.0, SR, 3, 0.3);
 
         let (a, b) = (tempo_of(&clean), tempo_of(&busy));
         assert!((a.bpm - 120.0).abs() < 0.5, "clean read {}", a.bpm);
         assert!((b.bpm - 120.0).abs() < 0.5, "busy read {}", b.bpm);
         assert!(
-            b.confidence < a.confidence - 0.05,
-            "clutter should cost confidence today: clean {} busy {}",
+            b.confidence > a.confidence - 0.05,
+            "clutter off the grid should not cost confidence: clean {} busy {}",
             a.confidence,
             b.confidence
         );
-        // And it is the level, not the competition, that carries the loss.
-        let a_mean = a.confidence_factors.as_ref().unwrap().beat_mean;
-        let b_mean = b.confidence_factors.as_ref().unwrap().beat_mean;
+        // The level still drops, so it is the margin holding the confidence up.
+        let a_f = a.confidence_factors.as_ref().expect("factors");
+        let b_f = b.confidence_factors.as_ref().expect("factors");
         assert!(
-            b_mean < a_mean - 1.0,
-            "clean mean {a_mean} busy mean {b_mean}"
+            b_f.beat_mean < a_f.beat_mean - 1.0,
+            "clean mean {} busy mean {}",
+            a_f.beat_mean,
+            b_f.beat_mean
         );
+        assert_eq!(b_f.margin, 1.0);
     }
 
     #[test]
@@ -931,6 +949,14 @@ mod tests {
     }
 
     #[test]
+    fn metric_relations_are_recognized() {
+        assert!(metrically_related(174.0, 87.0));
+        assert!(metrically_related(124.0, 124.0));
+        assert!(metrically_related(120.0, 180.0));
+        assert!(!metrically_related(124.0, 140.0));
+    }
+
+    #[test]
     fn an_unscorable_grid_never_outranks_a_scorable_one() {
         // Scores are routinely negative on real material, so a zero sentinel
         // for "could not score this" outranked every genuine reading. Only
@@ -952,14 +978,6 @@ mod tests {
             scorable.score
         );
     }
-
-    #[test]
-    fn metric_relations_are_recognized() {
-        assert!(metrically_related(174.0, 87.0));
-        assert!(metrically_related(124.0, 124.0));
-        assert!(metrically_related(120.0, 180.0));
-        assert!(!metrically_related(124.0, 140.0));
-    }
 }
 
 #[cfg(test)]
@@ -967,6 +985,25 @@ mod repro_tests {
     use super::tests::tempo_of;
     use super::*;
     use crate::testsig::{self, Groove};
+
+    /// A dense mix does not let a grid at four fifths of the beat win.
+    ///
+    /// Scored at the beat alone this reads 170 as 136 at confidence 0.979.
+    #[test]
+    fn a_dense_mix_does_not_hand_the_win_to_a_subdivision_grid() {
+        let sr = 44_100;
+        for bpm in [138.0f32, 170.0] {
+            let mut sig = testsig::groove(bpm, 30.0, sr, Groove::OffbeatTrance);
+            testsig::add_offgrid_clutter(&mut sig, bpm, sr, 3, 0.3);
+            let est = tempo_of(&sig);
+            assert!(
+                (est.bpm - bpm).abs() < 1.5,
+                "dense trance {bpm} read {} (conf {})",
+                est.bpm,
+                est.confidence
+            );
+        }
+    }
 
     /// A grid landing on every onset beats one landing on two thirds of them,
     /// even when the sparse grid's own points are just as strong.
