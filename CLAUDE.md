@@ -69,9 +69,10 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 | `cargo test --workspace` | Full test suite, no network |
 | `cargo fmt --all` | Format |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lint, warnings denied |
+| `scripts/check-no-binaries.sh` | Fail on a tracked SQLite database or large binary |
 | `cargo run -p metrognome-cli -- <args>` | Run the CLI in place |
 
-CI gates on fmt, clippy with warnings denied, and tests.
+CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`.
 
 ## Git workflow
 

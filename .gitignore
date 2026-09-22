@@ -1,2 +1,11 @@
 /target
 **/*.rs.bk
+
+# The result cache is SQLite, and one reached selecta's main under a name with
+# no extension, so keep both the obvious and the sidecar files out.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
