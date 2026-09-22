@@ -230,6 +230,39 @@ pub fn groove(bpm: f32, secs: f32, sample_rate: u32, groove: Groove) -> Vec<f32>
     out
 }
 
+/// Add percussive activity strictly between the beats of `signal`.
+///
+/// `per_beat` events per beat, evenly spaced inside it and never within 30 ms of
+/// a beat line, so the beat grid is left byte-identical and only the clip's
+/// overall activity rises. Isolates a mix's density from its tempo: the two move
+/// together in real audio, which is why a preview cannot separate them.
+pub fn add_offgrid_clutter(
+    signal: &mut [f32],
+    bpm: f32,
+    sample_rate: u32,
+    per_beat: usize,
+    amp: f32,
+) {
+    if per_beat == 0 || bpm <= 0.0 {
+        return;
+    }
+    let mut noise = Noise::new(0xfeed_face);
+    let beat = 60.0 / bpm * sample_rate as f32;
+    let beats = (signal.len() as f32 / beat).ceil() as usize;
+    for b in 0..beats {
+        for d in 1..=per_beat {
+            let frac = d as f32 / (per_beat as f32 + 1.0);
+            let at = ((b as f32 + frac) * beat).round() as usize;
+            mix_at(signal, &noise_burst(0.02, sample_rate, amp, &mut noise), at);
+            mix_at(
+                signal,
+                &drum_hit(150.0 + 30.0 * d as f32, 0.05, sample_rate, amp * 0.8, 15.0),
+                at,
+            );
+        }
+    }
+}
+
 /// Sustained groups of MIDI notes played in sequence, one group per slot.
 ///
 /// Companion to [`chord_progression`] for material that deliberately states too

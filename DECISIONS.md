@@ -770,3 +770,143 @@ class. Duration is both the consistent gate and the fair one.
 
 Key stays provisional, and the ground-truth set entry 31 asked for still does
 not exist — thirty-one tracks measured the gates, not the answers.
+
+## 36. Tempo confidence is mostly honest; the discrimination behind it is not
+
+The 2026-09-20 validate run on real previews put all ten reference tempos within
+0.1 BPM and reported confidences from 0.09 to 0.95. Two of the ten — Brown Paper
+Bag at 0.09 and Born Slippy at 0.34 — sit at or below `UNCERTAIN_AT_OR_BELOW`, so
+a consumer discards a correct answer. Sandstorm clears it by 0.045.
+
+The first read of this was wrong, and it is worth writing down why. Ranking the
+ten tracks by the best score in their own alternates list reproduces the
+confidence order exactly, which looked like proof that confidence tracks an
+absolute level and therefore that `clarity` — the one factor measuring level, at
+the heaviest exponent — was the cause. It is a real correlation and a false
+cause. A second run with the factors instrumented shows `clarity` is not even
+monotonic with confidence: Brown Paper Bag scores 0.500 on it against Born
+Slippy's 0.386 and still lands a quarter of the confidence.
+
+What the factors actually say, per track:
+
+- Brown Paper Bag, 0.089: clarity 0.500, evenness 0.319, periodic 0.296, and
+  `margin` 0.0027. The margin is the whole story. The comb scorer rated a
+  97.22 BPM grid within three thousandths of the correct 170.03. Confidence is
+  not miscalibrated here — it is honestly reporting that selection was a coin
+  flip that happened to land right.
+- Born Slippy, 0.341: clarity 0.386 and periodic 0.228, from an autocorrelation
+  of 0.114 at the beat lag. No unrelated rival at all, so margin is 1.0.
+- Sandstorm, 0.545: clarity 0.664, evenness 0.464, margin 0.433, three mild
+  penalties and no single cause.
+
+So there is no one term to retune, and the coverage problem is not in the
+confidence formula. Brown Paper Bag's is in candidate discrimination: a dense
+break where a grid at 4/7 of the true tempo scores as well as the true one.
+
+The instrumented run did surface one clear defect, in the opposite direction from
+the one being hunted. Four of the ten tracks — Born Slippy, Music Sounds Better,
+Hey Boy Hey Girl and Tarantula — report no unrelated rival and so take `margin`
+1.0 for free, because in each case the only competitor sits at 3/2 or 4/3 of the
+chosen tempo and `metrically_related` counts those as the same musical answer.
+The filter's stated reason is that a candidate at half the chosen tempo is one
+answer seen twice, which is true of an octave and only of an octave — and
+candidates are folded into `CANONICAL_LOW_BPM..CANONICAL_HIGH_BPM`, 90 to 180,
+exactly one octave, so no two folded candidates can ever be an octave apart and
+the case the filter was written for is unreachable. Its entire effect is to
+excuse the metric confusions, which `CANDIDATE_RATIOS` expands on purpose and
+`Verdict::MetricError` exists as a separate verdict to catch. Confidence is blind
+to exactly the error mode the validator checks for, in the direction that invents
+certainty.
+
+Narrowing that filter to octaves was built and measured, and is **deliberately
+not shipped here**. Its cost on the reference set:
+
+| Track | before | after | newly counted rival |
+|---|---:|---:|---|
+| Sandstorm | 0.55 | **0.47** | 90.71, gap 0.23 — crosses the discard line |
+| Born Slippy | 0.34 | **0.27** | 93.24, gap 0.40 |
+| Inner City Life | 0.87 | 0.80 | 103.32, gap 0.72 |
+| Music Sounds Better | 0.95 | 0.95 | 165.60, gap 3.78 |
+| Hey Boy Hey Girl | 0.91 | 0.91 | 169.30, gap 2.63 |
+| Tarantula | 0.82 | 0.82 | 116.04, gap 1.63 |
+
+Sandstorm is what settles it: 136.07 against a published 136, discarded because
+the scorer rates a 90.71 grid within 0.23 of it. The number is honest, and the
+outcome is that a track which is unambiguously 136 BPM reports no tempo at all.
+Every one of these gaps is small for the same reason Brown Paper Bag's is: the
+comb scorer cannot separate a tempo from its own 3/2 on sixteenth-dense material.
+Jonas's call (2026-09-20) is to fix the scorer first and let the gaps widen on
+their own, then narrow the filter against gaps that mean something. Shipping the
+filter change first would trade real coverage for a correctness that the scorer
+fix is expected to give back for free.
+
+Which tracks would move was also mispredicted, and that is worth recording.
+Three of the four reporting no rival at all turned out to have gaps above 1.0, so
+counting them changed nothing; the movement came from two tracks whose rival was
+already counted, because a *closer* 3/2 neighbour displaced it. The margin only
+bites below a gap of 1.0, and which candidate sits nearest is not visible from a
+confidence number.
+
+The scorer defect itself has a shape. All four of these rivals sit at an exact
+integer number of sixteenth notes per beat-grid step — 6, 7, 6, 6 — and on
+material with an event on most sixteenths any such grid finds an onset at every
+step it predicts. `recall` across every candidate on those tracks runs 0.054 to
+0.175, so `MISS_PENALTY * (1 - recall)` is near-constant and stops separating
+anything; `precision` is left to do the work alone, and it cannot tell a beat
+from a beat times 2/3.
+
+The measurements a fix is graded against, from the instrumented run. `score` is
+the chosen reading's own comb score and `gap` is its lead over the named
+neighbour, whether or not the rival filter currently counts it:
+
+| Track | BPM | score | nearest metric neighbour | gap |
+|---|---:|---:|---|---:|
+| Brown Paper Bag | 170.03 | -3.335 | 97.22, 7/4 below | **0.003** |
+| Sandstorm | 136.07 | -2.393 | 90.71, 3/2 below | 0.232 |
+| Born Slippy | 140.09 | -2.601 | 93.24, 3/2 below | 0.402 |
+| Inner City Life | 154.99 | -0.544 | 103.32, 3/2 below | 0.721 |
+| Tarantula | 174.11 | -0.825 | 116.04, 3/2 below | 1.629 |
+| Show Me Love | 120.23 | -0.646 | 160.30, 4/3 above | 1.909 |
+| Hey Boy Hey Girl | 126.99 | -0.143 | 169.30, 4/3 above | 2.627 |
+| Around the World | 121.28 | 1.058 | 161.69, 4/3 above | 3.550 |
+| Music Sounds Better | 124.20 | 1.577 | 165.60, 4/3 above | 3.778 |
+| Call on Me | 126.30 | 2.409 | 168.41, 4/3 above | 5.410 |
+
+The correlation to work from: the four smallest gaps all belong to tracks whose
+winner scores *negative*, and all three tracks scoring above zero have gaps past
+3.5. A scorer that cannot explain the true beat well in absolute terms cannot
+separate it from its own subdivisions either, so these are one problem and not
+two.
+
+A synthetic probe at 170 BPM reproduces it: true beat
+-0.505, six sixteenths -0.690, eight -0.717, ten **+0.240 — winning outright**.
+That is the follow-up, and it is a selection bug, not a calibration one.
+
+`pulse_strength` was considered as a level factor that might behave better and
+rejected: it is `raw_sd / raw_mean` on the un-normalized flux, so a busier clip
+lowers it too. Across one clutter sweep it fell from 4.13 to 1.15 while the
+envelope's beat-grid mean fell from 5.80 to 1.49. It is the same measurement in
+different units.
+
+This change therefore measures and reports, and alters no estimate. The five
+factors and their raw inputs travel on the estimate and print per track,
+including the chosen reading's own comb score — the alternates list every loser
+and never the winner, so a margin could not be checked against the scores printed
+beside it, which cost this investigation two rounds. A row whose tempo landed but
+is flagged uncertain gets a diagnostics block and a count of its own, because a
+correct answer nobody keeps is a failure of the same run. No `ALGORITHM_VERSION`
+bump: no DSP behaviour moved. No `SCHEMA_VERSION` bump either — the factors are
+`skip_serializing`, so the consumer contract is byte for byte what it was.
+
+Born Slippy's remaining oddity is left open: its autocorrelation at the chosen
+beat lag is 0.114, against 0.4 to 0.9 for every other reference track. The tempo
+is right and the periodicity the envelope shows at it is nearly absent, which
+points at the onset envelope missing most of that preview's beats rather than the
+scorer misreading them.
+
+The lesson is the one entry 34 also paid for. On 24 synthetic cases `clarity`,
+`margin` and `coverage` were pinned at exactly 1.000 and confidence never left
+0.77 to 0.999, against 0.09 to 0.95 on real previews, so the suite could not
+distinguish any of these explanations. Reasoning backwards from the two numbers
+the output did expose produced a confident, wrong answer; one instrumented run
+produced the right one in minutes. Instrument before theorising.

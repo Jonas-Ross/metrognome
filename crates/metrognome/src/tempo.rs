@@ -3,7 +3,9 @@
 //! be expressed, and a phase-aligned comb filter scores and refines them.
 
 use crate::dsp::{autocorrelation, interp_at, smooth, OnsetEnvelope};
-use crate::types::{Alternate, Maturity, TempoEstimate, UNCERTAIN_AT_OR_BELOW};
+use crate::types::{
+    Alternate, Maturity, TempoConfidenceFactors, TempoEstimate, UNCERTAIN_AT_OR_BELOW,
+};
 
 /// Identifier recorded on every tempo estimate.
 pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@1";
@@ -414,19 +416,23 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     // The strongest reading that is not just the chosen tempo re-expressed.
     // `None` is the most confident case, not the least; a default of zero would
     // read as a rival beating a winner whose own score is negative.
+    // Counts a 3/2 or 4/3 competitor as a restatement, so four of ten reference
+    // tracks take full marks here unearned — DECISIONS.md entry 36.
     let rival = scored[1..]
         .iter()
         .find(|c| !metrically_related(c.bpm, best.bpm))
         .map(|c| c.score);
     let periodicity = interp_at(&acf, 60.0 * fps / best.bpm);
     let observed_beats = (env.values.len() as f32 / fps) * best.bpm / 60.0;
-    let confidence = crate::types::normalize_confidence(confidence(
+    let (raw_confidence, mut confidence_factors) = confidence(
         best.mean,
         best.sd,
         rival.map(|r| best.score - r),
         periodicity,
         observed_beats,
-    ));
+    );
+    confidence_factors.winner_score = best.score;
+    let confidence = crate::types::normalize_confidence(raw_confidence);
 
     let mut alternates: Vec<Alternate> = Vec::new();
     // Always offer the fold's two neighbours, because the fold is an opinion
@@ -487,6 +493,7 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
         beat_offset_secs: round3(beat_offset),
         canonical_window_bpm: [CANONICAL_LOW_BPM, CANONICAL_HIGH_BPM],
         alternates,
+        confidence_factors: Some(confidence_factors),
     })
 }
 
@@ -515,14 +522,21 @@ const MARGIN_SATURATION: f32 = 1.0;
 /// live-capture buffer might not, and should say so.
 const COVERAGE_SATURATION: f32 = 32.0;
 
-/// Fold five signals into a single 0-1 score.
+/// Fold five signals into a single 0-1 score, and report what went into it.
 ///
 /// Multiplicative, so each factor can veto alone: a clip with no beat must not
-/// score well because whatever it found was unrivalled. Every factor is
-/// scale-free or in z-scored units, so one number means the same on a house
-/// loop and a breakbeat. `gap` is the winner's score over the best unrelated
-/// reading, `None` when there is none.
-fn confidence(mean: f32, sd: f32, gap: Option<f32>, periodicity: f32, observed_beats: f32) -> f32 {
+/// score well because whatever it found was unrivalled. `gap` is the winner's
+/// score over the best unrelated reading, `None` when there is none.
+///
+/// `None` for `gap` therefore reads as full marks, which on real previews is
+/// where the unearned confidence lives. See DECISIONS.md entry 36.
+fn confidence(
+    mean: f32,
+    sd: f32,
+    gap: Option<f32>,
+    periodicity: f32,
+    observed_beats: f32,
+) -> (f32, TempoConfidenceFactors) {
     // How far above background this grid's beats sit on average.
     let clarity = (mean / CLARITY_SATURATION).clamp(0.0, 1.0);
     // Whether they are alike, independent of how loud the track is. A grid
@@ -547,11 +561,28 @@ fn confidence(mean: f32, sd: f32, gap: Option<f32>, periodicity: f32, observed_b
 
     // Exponents weight clarity hardest: it is the only factor that is low for
     // both of the two real failure modes (no beat, and a beat we missed).
-    clarity.powf(0.5)
+    let score = clarity.powf(0.5)
         * evenness.powf(0.25)
         * margin.powf(0.25)
         * periodic.powf(0.25)
-        * coverage.powf(0.25)
+        * coverage.powf(0.25);
+    (
+        score,
+        TempoConfidenceFactors {
+            clarity,
+            evenness,
+            margin,
+            periodic,
+            coverage,
+            beat_mean: mean,
+            beat_sd: sd,
+            rival_gap: gap,
+            periodicity,
+            observed_beats,
+            // Filled in by the caller, which is the only place it is known.
+            winner_score: 0.0,
+        },
+    )
 }
 
 fn round2(v: f32) -> f32 {
@@ -569,6 +600,11 @@ mod tests {
     use crate::testsig::{self, Groove};
 
     const SR: u32 = 44_100;
+
+    /// Confidence alone; the factor breakdown has its own tests.
+    fn conf(mean: f32, sd: f32, gap: Option<f32>, periodicity: f32, beats: f32) -> f32 {
+        confidence(mean, sd, gap, periodicity, beats).0
+    }
 
     pub(super) fn tempo_of(signal: &[f32]) -> TempoEstimate {
         let stft = Stft::for_onsets(SR);
@@ -766,28 +802,72 @@ mod tests {
         // well as a drop.
         let (mean, sd) = (4.0, 5.0);
         assert!(mean - CONSISTENCY_PENALTY * sd < 0.0, "not the bug's shape");
-        let c = confidence(mean, sd, Some(1.5), 0.6, 64.0);
+        let c = conf(mean, sd, Some(1.5), 0.6, 64.0);
         assert!(c > 0.3, "got {c}");
 
         // Evenness still separates it from a grid whose beats are alike.
-        let even = confidence(mean, 0.5, Some(1.5), 0.6, 64.0);
+        let even = conf(mean, 0.5, Some(1.5), 0.6, 64.0);
         assert!(even > c, "even {even} should beat uneven {c}");
+    }
+
+    #[test]
+    fn the_factors_reported_multiply_back_to_the_confidence() {
+        let (score, f) = confidence(1.8, 0.6, Some(0.4), 0.35, 48.0);
+        let replayed = f.clarity.powf(0.5)
+            * f.evenness.powf(0.25)
+            * f.margin.powf(0.25)
+            * f.periodic.powf(0.25)
+            * f.coverage.powf(0.25);
+        assert!((score - replayed).abs() < 1e-6, "{score} vs {replayed}");
+        // The raw inputs travel too: the alternates carry every loser's score
+        // and never the winner's, so the gap is unrecoverable without them.
+        assert_eq!(f.beat_mean, 1.8);
+        assert_eq!(f.beat_sd, 0.6);
+        assert_eq!(f.rival_gap, Some(0.4));
+        assert_eq!(f.periodicity, 0.35);
+    }
+
+    #[test]
+    fn a_busier_mix_costs_confidence_at_an_unchanged_tempo() {
+        // Recorded defect, not desired behaviour: the clutter never lands on a
+        // beat, so the grid is identical and only the clip's activity rises.
+        // A recalibration is expected to move this; DECISIONS.md entry 36.
+        let clean = testsig::groove(120.0, 30.0, SR, Groove::FourOnFloor);
+        let mut busy = clean.clone();
+        testsig::add_offgrid_clutter(&mut busy, 120.0, SR, 7, 0.6);
+
+        let (a, b) = (tempo_of(&clean), tempo_of(&busy));
+        assert!((a.bpm - 120.0).abs() < 0.5, "clean read {}", a.bpm);
+        assert!((b.bpm - 120.0).abs() < 0.5, "busy read {}", b.bpm);
+        assert!(
+            b.confidence < a.confidence - 0.05,
+            "clutter should cost confidence today: clean {} busy {}",
+            a.confidence,
+            b.confidence
+        );
+        // And it is the level, not the competition, that carries the loss.
+        let a_mean = a.confidence_factors.as_ref().unwrap().beat_mean;
+        let b_mean = b.confidence_factors.as_ref().unwrap().beat_mean;
+        assert!(
+            b_mean < a_mean - 1.0,
+            "clean mean {a_mean} busy mean {b_mean}"
+        );
     }
 
     #[test]
     fn a_grid_with_no_beat_under_it_reports_nothing() {
         // Clarity has to veto on its own: no amount of periodicity, coverage or
         // absent competition may lift a grid that sits at background level.
-        assert_eq!(confidence(0.0, 0.1, None, 1.0, 1000.0), 0.0);
-        assert!(confidence(0.05, 0.1, None, 1.0, 1000.0) < 0.2);
+        assert_eq!(conf(0.0, 0.1, None, 1.0, 1000.0), 0.0);
+        assert!(conf(0.05, 0.1, None, 1.0, 1000.0) < 0.2);
     }
 
     #[test]
     fn an_uncontested_winner_is_not_penalized_for_having_no_rival() {
         // Every finalist being a metric restatement of the winner is the most
         // confident case there is, not the least.
-        let contested = confidence(4.0, 1.0, Some(0.1), 0.6, 64.0);
-        let uncontested = confidence(4.0, 1.0, None, 0.6, 64.0);
+        let contested = conf(4.0, 1.0, Some(0.1), 0.6, 64.0);
+        let uncontested = conf(4.0, 1.0, None, 0.6, 64.0);
         assert!(
             uncontested > contested,
             "uncontested {uncontested} vs narrowly contested {contested}"

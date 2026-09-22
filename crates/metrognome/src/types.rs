@@ -68,6 +68,35 @@ pub struct Alternate {
     pub score: f32,
 }
 
+/// The factors behind a tempo confidence, plus the raw inputs they came from.
+///
+/// Diagnostic only, and outside the JSON contract. See DECISIONS.md entry 36.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TempoConfidenceFactors {
+    /// How far above background the chosen grid's beats sit, saturating.
+    pub clarity: f32,
+    /// How alike those beats are.
+    pub evenness: f32,
+    /// How far the winner is ahead of the best unrelated reading.
+    pub margin: f32,
+    /// Whether the clip is periodic at this rate at all.
+    pub periodic: f32,
+    /// How much audio the estimate stands on.
+    pub coverage: f32,
+    /// Mean onset strength on the chosen grid, in envelope standard deviations.
+    pub beat_mean: f32,
+    /// Spread of onset strength across those beats, same units.
+    pub beat_sd: f32,
+    /// Raw score gap over the best unrelated reading, `None` when there is none.
+    pub rival_gap: Option<f32>,
+    /// Autocorrelation at the chosen period.
+    pub periodicity: f32,
+    /// Beats of audio the estimate stands on.
+    pub observed_beats: f32,
+    /// The chosen reading's own comb score, which the alternates never carry.
+    pub winner_score: f32,
+}
+
 /// Tempo in beats per minute.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TempoEstimate {
@@ -88,6 +117,11 @@ pub struct TempoEstimate {
     /// Other plausible tempos, best first. Always includes the half and double
     /// of the chosen tempo so a consumer can override the fold.
     pub alternates: Vec<Alternate>,
+    /// What produced [`Self::confidence`]. Not serialized, so it stays out of
+    /// the consumer contract — and `None` after a round-trip, because absent is
+    /// the honest reading of a factor set that was never carried.
+    #[serde(default, skip_serializing)]
+    pub confidence_factors: Option<TempoConfidenceFactors>,
 }
 
 /// Musical key.
@@ -352,8 +386,21 @@ mod tests {
             beat_offset_secs: 0.0,
             canonical_window_bpm: [90.0, 180.0],
             alternates: Vec::new(),
+            confidence_factors: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn the_confidence_factors_stay_out_of_the_consumer_contract() {
+        // Diagnostic, so it is deliberately not a schema change. It still
+        // round-trips, because a payload that cannot be read back is a bug —
+        // and comes back `None` rather than as a set of zeroes a reader would
+        // print as measurements.
+        let json = tempo_json();
+        assert!(!json.contains("confidence_factors"), "{json}");
+        let back: TempoEstimate = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.confidence_factors, None);
     }
 
     #[test]
