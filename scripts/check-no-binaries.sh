@@ -3,15 +3,19 @@
 # extension-based ignore rule could have caught, so this matches on content.
 set -euo pipefail
 
+command -v perl > /dev/null || { printf 'error: perl is required\n' >&2; exit 2; }
+
 max_bytes=${MAX_BINARY_BYTES:-65536}
 status=0
 
 # `grep -I` only calls a file binary when it holds a NUL byte, so a large blob
-# of nonzero bytes would read as text. Valid UTF-8 is the test instead, which
-# still accepts a document that is mostly non-ASCII.
+# of nonzero bytes would read as text. Perl keeps the answer identical on Linux
+# and macOS, where `tr` and `iconv` differ.
 is_text() {
-  LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1" &&
-    iconv -f UTF-8 -t UTF-8 < "$1" > /dev/null 2>&1
+  perl -0777 -MEncode -ne '
+    exit 1 if /\0/;
+    exit(eval { Encode::decode(q{UTF-8}, $_, Encode::FB_CROAK); 1 } ? 0 : 1);
+  ' -- "$1"
 }
 
 while IFS= read -r -d '' file; do
