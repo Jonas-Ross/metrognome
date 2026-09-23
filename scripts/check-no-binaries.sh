@@ -6,6 +6,14 @@ set -euo pipefail
 max_bytes=${MAX_BINARY_BYTES:-65536}
 status=0
 
+# `grep -I` only calls a file binary when it holds a NUL byte, so a large blob
+# of nonzero bytes would read as text. Valid UTF-8 is the test instead, which
+# still accepts a document that is mostly non-ASCII.
+is_text() {
+  LC_ALL=C tr -d '\000' < "$1" | cmp -s - "$1" &&
+    iconv -f UTF-8 -t UTF-8 < "$1" > /dev/null 2>&1
+}
+
 while IFS= read -r -d '' file; do
   [ -f "$file" ] || continue
 
@@ -17,7 +25,7 @@ while IFS= read -r -d '' file; do
 
   # Only large binaries fail, so a small fixture stays possible without an
   # allowlist to keep in sync.
-  LC_ALL=C grep -qI . -- "$file" 2>/dev/null && continue
+  is_text "$file" && continue
 
   size=$(wc -c < "$file")
 
