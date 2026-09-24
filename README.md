@@ -74,7 +74,7 @@ moving existing ones.
       "confidence": 0.86,
       "uncertain": false,
       "maturity": "validated",
-      "source": "metrognome/onset-autocorrelation-comb@2",
+      "source": "metrognome/onset-autocorrelation-comb@3",
       "beat_offset_secs": 0.496,
       "canonical_window_bpm": [90.0, 180.0],
       "alternates": [{ "value": 60.5, "relation": "half", "score": 5.109 }]

@@ -993,13 +993,89 @@ looks like this — it takes clutter synthesized at kick amplitude to reach.
 confidence moves, and some estimates do. `SCHEMA_VERSION` stays at 2 — no field
 is added, moved or redefined.
 
-## 38. A key label version of its own, held to the scorer's output by a test
+## 38. The onset envelope is whitened per band; sparse tracks were not an envelope problem
+
+Entry 37 left Brown Paper Bag (0.39) and Born Slippy (0.34) under the discard
+line and blamed a weak onset envelope. That diagnosis was only half right, and
+this entry records both halves.
+
+**What was measured.** Around thirty envelope variants were run through the real
+tempo estimator on the ten reference previews, fetched once into memory:
+flux lag of 2-4 frames, a SuperFlux-style frequency max filter, 128 mel bands,
+log-compression constants from 100 to 10000, rectifying after detrending,
+median-filter harmonic/percussive separation at four kernel sizes, and
+per-band adaptive whitening at several memories, floors and compressions. Only
+whitening helped consistently; everything else moved Born Slippy by under 0.01
+or made it worse (the max filter and percussive separation cost it margin).
+
+**Why no envelope rescues them.** Instrumented, both tracks are periodic per
+bar and not per beat, in every band:
+
+| Track | acf at 1 beat | 2 beats | 4 beats | 8 beats | strongest peak |
+|---|---:|---:|---:|---:|---|
+| Born Slippy | 0.11 | 0.12 | 0.19 | 0.25 | 1.5 beats, 0.36 |
+| Brown Paper Bag | 0.15 | 0.13 | 0.17 | 0.29 | 8 beats, 0.29 |
+| Call on Me, for scale | 0.92 | 0.90 | 0.85 | 0.78 | 1 beat |
+
+Split into eight mel band groups, Born Slippy's beat-lag autocorrelation stays
+under 0.08 in every one, kick band included; its strongest periodicity is the
+dotted-quarter grouping of the synth and vocal. Removing harmonic content does
+not change that, so the grouping is carried by percussive events too. The
+confidence is reporting the audio honestly: the beat is right, and the preview
+barely states it. Reading periodicity at the bar instead of the beat was also
+measured and lifts Brown Paper Bag by 0.015 and Born Slippy by 0.05, because
+clarity and evenness hold them down as much as periodicity does. Even a perfect
+`periodic` would leave Born Slippy at 0.49.
+
+**What ships: per-band adaptive whitening.** Each mel band is divided by a
+decaying follower of its own peak (3 s memory, floored at -40 dB under the
+clip's loudest value) before log compression, whose constant drops from 1000 to
+10 because it now sees a 0-1 ratio. A sustained loud band no longer outweighs
+the quieter bands a syncopated beat lands in. The envelope also stops depending
+on playback level, which the future live-listening path will need.
+
+Real audio, `validate --no-cache`, before and after:
+
+| Track | BPM before | after | conf before | after | acf before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| Brown Paper Bag | 170.03 | 170.20 | 0.392 | **0.460** | 0.148 | 0.193 |
+| Sandstorm | 136.07 | 136.11 | 0.673 | **0.710** | 0.525 | 0.656 |
+| Around the World | 121.28 | 121.27 | 0.925 | 0.955 | 0.694 | 0.806 |
+| Tarantula | 174.11 | 174.11 | 0.823 | 0.841 | 0.406 | 0.444 |
+| Born Slippy | 140.09 | 140.09 | 0.341 | 0.338 | 0.114 | 0.112 |
+| the other five | | within 0.02 BPM | 0.87-0.95 | 0.88-0.95 | | |
+
+Ten of ten stay within 0.2 BPM, discards stay at two. Autocorrelation at the
+chosen beat rises on eight of ten. On the synthetic selftest every tempo stays
+exact and confidence moves from 0.94-0.96 to 0.90-0.98. Seven extra previews
+with unverified tempos were checked in the lab (an earlier variant with an
+absolute floor): none changed tempo by more than 0.02 BPM, Aphex Twin's Xtal
+rose from 0.74 to 0.92, and the largest drops were Teardrop (0.65 to 0.61) and
+Porcelain (0.90 to 0.86).
+
+The alternatives were tuned and rejected on the numbers above rather than on
+principle, so the constants carry the measurement: a 1 s memory gave Brown Paper
+Bag 0.44 and 6-10 s gave 0.47, a flat region; a compression constant of 1 gave
+0.48 and cost Born Slippy margin; the floor made no difference on real previews
+between 1e-4 absolute and -40 dB relative, and relative was chosen so a quiet
+clip is not whitened into its own noise floor.
+
+**What stays open.** Neither track clears the line, and pushing them over would
+mean reading bar-level structure as beat evidence, which would lift a 4/3
+reading of a breakbeat just as much. If that is ever worth doing it is a change
+to the confidence formula, judged on a breakbeat-heavy reference set, and not
+an envelope change.
+
+`ALGORITHM_VERSION` 9 to 10 and `TEMPO_SOURCE` to `@3`: every cached tempo
+confidence moves. `SCHEMA_VERSION` stays at 2.
+
+## 39. A key label version of its own, held to the scorer's output by a test
 
 Issue #13 reported that the key label stayed at `@3` across the #5/#7/#8
 recalibration. The history says otherwise: `44247e9`, the commit that took
 `ALGORITHM_VERSION` 7 to 8, also moved both key labels `@2` to `@3`, and every
 later key change in that PR landed before the merge. The pinned outputs below
-are identical at the #8 merge (`e787500`) and on `main` after #10, so every
+are identical at the #8 merge (`e787500`) and on `main` after #10 and #15, so every
 stored `@3` key comes from one scorer and needs nothing on selecta's side. What
 was real is that the bump rests on memory: `@1` to `@2` needed a follow-up
 commit (`db9e745`) because the scoring change shipped without it.
@@ -1020,5 +1096,5 @@ can't trip it, and mutating `KEY_MARGIN_SCALE` 0.10 to 0.11 or
 `COVERAGE_FLOOR` 3.5 to 3.8 still does. It cannot tell a deliberate change
 from an accident; it only makes forgetting the label impossible.
 
-Tempo gets the rule in `CLAUDE.md` but not the test yet, since another change is
-moving tempo output as this lands.
+Tempo gets the rule in `CLAUDE.md` but not the test yet: #15 was moving tempo
+output while this was written, so its pin is a follow-up.
