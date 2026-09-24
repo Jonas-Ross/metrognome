@@ -60,6 +60,11 @@ Two crates, split so that analysis has no I/O assumptions baked in:
   is separate and tracks the JSON contract: bump it when a consumer gains a
   field it can count on, or when one moves or changes meaning. A field that may
   be absent is not a bump.
+- **Bump the feature's label with it.** selecta re-measures stored results by
+  their `source` label, and `ALGORITHM_VERSION` never reaches it. A change that
+  can move key output bumps `KEY_SCORER_VERSION` (a test pins key output to
+  it); one that can move tempo bumps the `@N` in `TEMPO_SOURCE`. Leave the other
+  feature's label alone.
 
 ## Commands
 

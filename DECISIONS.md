@@ -992,3 +992,33 @@ looks like this — it takes clutter synthesized at kick amplitude to reach.
 `ALGORITHM_VERSION` 8 to 9 and `TEMPO_SOURCE` to `@2`: every cached tempo
 confidence moves, and some estimates do. `SCHEMA_VERSION` stays at 2 — no field
 is added, moved or redefined.
+
+## 38. A key label version of its own, held to the scorer's output by a test
+
+Issue #13 reported that the key label stayed at `@3` across the #5/#7/#8
+recalibration. The history says otherwise: `44247e9`, the commit that took
+`ALGORITHM_VERSION` 7 to 8, also moved both key labels `@2` to `@3`, and every
+later key change in that PR landed before the merge. The pinned outputs below
+are identical at the #8 merge (`e787500`) and on `main` after #10, so every
+stored `@3` key comes from one scorer and needs nothing on selecta's side. What
+was real is that the bump rests on memory: `@1` to `@2` needed a follow-up
+commit (`db9e745`) because the scoring change shipped without it.
+
+**The label gets its own counter, `KEY_SCORER_VERSION`, not a copy of
+`ALGORITHM_VERSION`.** The algorithm version moves for tempo changes too, and a
+key label that moved with it would have selecta re-measure every key after a
+tempo-only fix. The cache still keys on `ALGORITHM_VERSION`, so both bump when
+key output moves.
+
+**A test pins the scorer's output on fixed synthetic material** — thirteen
+signals, both profiles, key plus confidence and correlation — and fails on any
+change with the new table printed and an instruction to bump. A second
+assertion ties the pin to the version constant, so bumping one without the
+other fails; a re-pin that skips the bump is left to review, where it shows as
+a table change with no version change. Tolerance is 0.005: loose enough that platform `libm` differences
+can't trip it, and mutating `KEY_MARGIN_SCALE` 0.10 to 0.11 or
+`COVERAGE_FLOOR` 3.5 to 3.8 still does. It cannot tell a deliberate change
+from an accident; it only makes forgetting the label impossible.
+
+Tempo gets the rule in `CLAUDE.md` but not the test yet, since another change is
+moving tempo output as this lands.
