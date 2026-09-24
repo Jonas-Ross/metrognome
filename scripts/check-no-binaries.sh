@@ -38,5 +38,5 @@ git ls-files -z | perl -MEncode -0 -ne '
     $status = 1;
   }
 
-  END { $? = $status }
+  END { $? ||= $status }
 '
