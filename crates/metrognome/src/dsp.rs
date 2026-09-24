@@ -58,11 +58,23 @@ const MEL_FMIN: f32 = 30.0;
 /// transient and mostly adds noise to the flux.
 const MEL_FMAX: f32 = 11_000.0;
 
-/// Log-compression constant for the mel magnitudes.
+/// Log-compression constant for the whitened mel magnitudes.
 ///
-/// `ln(1 + gamma*S)`: at 1000 a quiet hat and a loud kick contribute
-/// comparably, since tempo is carried by event timing, not loudness.
-const LOG_COMPRESSION_GAMMA: f32 = 1000.0;
+/// `ln(1 + gamma*r)` on a 0-1 ratio to the band's recent peak: at 10 a hit at a
+/// tenth of that peak still registers about a third as strongly as the peak.
+const LOG_COMPRESSION_GAMMA: f32 = 10.0;
+
+/// Memory of each mel band's peak follower, in seconds.
+///
+/// Longer than a bar at 90 BPM, so a bar's own accents survive; short enough
+/// to follow a drop. DECISIONS.md entry 38.
+const WHITEN_MEMORY_SECS: f32 = 3.0;
+
+/// Floor under a band's peak, relative to the clip's loudest band value.
+///
+/// -40 dB: quieter than this is noise floor, and whitening it to full scale
+/// would turn hiss into onsets.
+const WHITEN_FLOOR_REL: f32 = 0.01;
 
 /// Window, in seconds, of the moving average subtracted from the raw flux.
 ///
@@ -270,7 +282,7 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     }
     let fb = mel_filterbank(spec);
 
-    // Log-compressed mel magnitudes, frame-major.
+    // Mel magnitudes, frame-major.
     let mut mel = vec![0.0f32; spec.frames * N_MELS];
     for t in 0..spec.frames {
         let row = spec.frame(t);
@@ -281,8 +293,12 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
                     acc += v * w;
                 }
             }
-            mel[t * N_MELS + m] = (1.0 + LOG_COMPRESSION_GAMMA * acc).ln();
+            mel[t * N_MELS + m] = acc;
         }
+    }
+    whiten(&mut mel, spec.fps);
+    for v in mel.iter_mut() {
+        *v = (1.0 + LOG_COMPRESSION_GAMMA * *v).ln();
     }
 
     // Half-wave rectified first difference: only energy *increases* are onsets.
@@ -302,7 +318,7 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     let raw_mean = flux.iter().sum::<f32>() / flux.len() as f32;
     let raw_sd = std_dev(&flux, raw_mean);
     // Before detrending: how spiky is the flux relative to its own level? A
-    // click track lands near 3, a sustained pad near 0.3.
+    // click track lands near 6, a steady tone near 1.
     let pulse_strength = if raw_mean > 1e-9 {
         raw_sd / raw_mean
     } else {
@@ -325,6 +341,25 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
         fps: spec.fps,
         latency_secs: (spec.n_fft as f32 - hop) / spec.sample_rate as f32,
         pulse_strength,
+    }
+}
+
+/// Divide each mel band by a decaying follower of its own peak, in place.
+///
+/// Adaptive whitening: a sustained loud band (a bassline, a pad) otherwise
+/// outweighs the quieter bands where a syncopated beat's hits land.
+fn whiten(mel: &mut [f32], fps: f32) {
+    let decay = (-1.0 / (WHITEN_MEMORY_SECS * fps)).exp();
+    let floor = mel.iter().fold(0.0f32, |a, &v| a.max(v)) * WHITEN_FLOOR_REL;
+    if floor <= 0.0 {
+        return;
+    }
+    for m in 0..N_MELS {
+        let mut peak = floor;
+        for v in mel.iter_mut().skip(m).step_by(N_MELS) {
+            peak = v.max(peak * decay).max(floor);
+            *v /= peak;
+        }
     }
 }
 
@@ -503,6 +538,38 @@ mod tests {
             flat.pulse_strength,
             env.pulse_strength
         );
+    }
+
+    #[test]
+    fn whitening_puts_a_quiet_band_level_with_a_loud_one() {
+        let mut mel = vec![0.0f32; 4 * N_MELS];
+        for t in 0..4 {
+            mel[t * N_MELS] = 100.0;
+            mel[t * N_MELS + 1] = 2.0;
+            // Below the -40 dB floor: stays small rather than scaled to 1.
+            mel[t * N_MELS + 2] = 0.1;
+        }
+        whiten(&mut mel, 100.0);
+        let last = &mel[3 * N_MELS..];
+        assert!((last[0] - 1.0).abs() < 1e-6, "{}", last[0]);
+        assert!((last[1] - 1.0).abs() < 1e-6, "{}", last[1]);
+        assert!(last[2] < 0.2, "{}", last[2]);
+    }
+
+    #[test]
+    fn onset_envelope_does_not_depend_on_playback_level() {
+        let sr = 44_100;
+        let stft = Stft::for_onsets(sr);
+        let loud = testsig::groove(170.0, 8.0, sr, testsig::Groove::Breakbeat);
+        let quiet: Vec<f32> = loud.iter().map(|v| v * 0.01).collect();
+        let a = onset_envelope(&stft.magnitudes(&loud, sr)).values;
+        let b = onset_envelope(&stft.magnitudes(&quiet, sr)).values;
+        let worst = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-3, "envelopes differ by {worst}");
     }
 
     #[test]
