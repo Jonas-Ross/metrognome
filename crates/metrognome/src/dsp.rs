@@ -318,7 +318,7 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     let raw_mean = flux.iter().sum::<f32>() / flux.len() as f32;
     let raw_sd = std_dev(&flux, raw_mean);
     // Before detrending: how spiky is the flux relative to its own level? A
-    // click track lands near 3, a sustained pad near 0.3.
+    // click track lands near 6, a steady tone near 1.
     let pulse_strength = if raw_mean > 1e-9 {
         raw_sd / raw_mean
     } else {
