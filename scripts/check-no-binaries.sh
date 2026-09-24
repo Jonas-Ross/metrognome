@@ -5,49 +5,38 @@ set -euo pipefail
 
 command -v perl > /dev/null || { printf 'error: perl is required\n' >&2; exit 2; }
 
-max_bytes=${MAX_BINARY_BYTES:-65536}
-status=0
+export MAX_BINARY_BYTES=${MAX_BINARY_BYTES:-65536}
 
-# 0 text, 1 binary, 2 SQLite database. `grep -I` would call any NUL-free blob
-# text, so text here means valid UTF-8 carrying no control characters beyond
-# the four a document uses. Perl also keeps the answer identical on Linux and
-# macOS, and can compare the NUL that ends SQLite's magic header, which a shell
-# comparison drops.
-classify() {
-  perl -0777 -MEncode -ne '
-    exit 2 if /\ASQLite format 3\0/;
+# One perl process for every file: a fork per file took over 5s on macOS.
+# `grep -I` would call any NUL-free blob text, so text here means valid UTF-8
+# carrying no control characters beyond the four a document uses. Perl also
+# keeps the answer identical on Linux and macOS, and can compare the NUL that
+# ends SQLite's magic header, which a shell comparison drops.
+git ls-files -z | perl -MEncode -0 -ne '
+  BEGIN { $status = 0; $max = $ENV{MAX_BINARY_BYTES} }
+  chomp(my $file = $_);
+  next unless -f $file;
 
-    my $text = eval { Encode::decode(q{UTF-8}, $_, Encode::FB_CROAK) };
+  open(my $fh, q{<:raw}, $file) or die "error: cannot read $file: $!\n";
+  my $body = do { local $/; <$fh> } // q{};
+  close $fh;
 
-    exit 1 unless defined $text;
-    exit($text =~ /(?![\t\n\f\r])\p{Cc}/ ? 1 : 0);
-  ' -- "$1"
-}
+  if ($body =~ /\ASQLite format 3\0/) {
+    print STDERR "error: $file is a SQLite database\n";
+    $status = 1;
+    next;
+  }
 
-while IFS= read -r -d '' file; do
-  [ -f "$file" ] || continue
-
-  verdict=0
-  classify "$file" || verdict=$?
-
-  if [ "$verdict" -eq 2 ]; then
-    printf 'error: %s is a SQLite database\n' "$file" >&2
-    status=1
-    continue
-  fi
+  my $text = eval { Encode::decode(q{UTF-8}, $body, Encode::FB_CROAK | Encode::LEAVE_SRC) };
+  next if defined $text && $text !~ /(?![\t\n\f\r])\p{Cc}/;
 
   # Only large binaries fail, so a small fixture stays possible without an
   # allowlist to keep in sync.
-  if [ "$verdict" -eq 0 ]; then
-    continue
-  fi
+  my $size = length $body;
+  if ($size > $max) {
+    print STDERR "error: $file is $size bytes of binary data (limit $max)\n";
+    $status = 1;
+  }
 
-  size=$(wc -c < "$file")
-
-  if [ "$size" -gt "$max_bytes" ]; then
-    printf 'error: %s is %s bytes of binary data (limit %s)\n' "$file" "$size" "$max_bytes" >&2
-    status=1
-  fi
-done < <(git ls-files -z)
-
-exit $status
+  END { $? ||= $status }
+'
