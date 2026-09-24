@@ -12,6 +12,10 @@ use crate::types::{Alternate, KeyEstimate, KeyScoring, Maturity, UNCERTAIN_AT_OR
 /// DECISIONS.md entries 31 and 32.
 pub const KEY_MATURITY: Maturity = Maturity::Provisional;
 
+/// The `@N` on every key `source`. Consumers re-measure stored keys by that
+/// label, so bump it whenever a change can move any key estimate or confidence.
+pub const KEY_SCORER_VERSION: u32 = 3;
+
 /// Pitch-class names, spelled the way the Camelot wheel spells them.
 ///
 /// Flats throughout for the black keys, matching how the charts spell them.
@@ -44,11 +48,12 @@ impl KeyProfile {
         }
     }
 
-    fn source(self) -> &'static str {
-        match self {
-            KeyProfile::Krumhansl => "metrognome/chroma-correlation-krumhansl@3",
-            KeyProfile::Edm => "metrognome/chroma-correlation-edm@3",
-        }
+    fn source(self) -> String {
+        let name = match self {
+            KeyProfile::Krumhansl => "krumhansl",
+            KeyProfile::Edm => "edm",
+        };
+        format!("metrognome/chroma-correlation-{name}@{KEY_SCORER_VERSION}")
     }
 
     /// Parse a profile name as accepted on the command line.
@@ -416,7 +421,7 @@ pub fn estimate_key_scored(
             confidence,
             uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
             maturity: KEY_MATURITY,
-            source: profile.source().to_string(),
+            source: profile.source(),
             alternates,
             scoring: None,
         },
@@ -922,6 +927,150 @@ mod tests {
     #[test]
     fn silence_yields_no_key() {
         assert!(key_of(&vec![0.0f32; SR as usize * 2], KeyProfile::Edm).is_none());
+    }
+
+    /// Scorer output on fixed material, as (key, confidence, correlation).
+    /// Re-pin only alongside a [`KEY_SCORER_VERSION`] bump.
+    const PINNED_VERSION: u32 = 3;
+    type Pin = (&'static str, KeyProfile, Option<(&'static str, f32, f32)>);
+    #[rustfmt::skip]
+    const PINNED: &[Pin] = &[
+        ("C major", KeyProfile::Edm, Some(("C major", 0.977, 0.960))),
+        ("C major", KeyProfile::Krumhansl, Some(("C major", 0.963, 0.938))),
+        ("A minor", KeyProfile::Edm, Some(("A minor", 0.903, 0.957))),
+        ("A minor", KeyProfile::Krumhansl, Some(("A minor", 0.915, 0.947))),
+        ("F# major", KeyProfile::Edm, Some(("F# major", 0.930, 0.926))),
+        ("F# major", KeyProfile::Krumhansl, Some(("F# major", 0.919, 0.933))),
+        ("Eb minor", KeyProfile::Edm, Some(("Eb minor", 0.930, 0.940))),
+        ("Eb minor", KeyProfile::Krumhansl, Some(("Eb minor", 0.873, 0.868))),
+        ("Eb minor over drums", KeyProfile::Edm, Some(("Eb minor", 0.934, 0.939))),
+        ("Eb minor over drums", KeyProfile::Krumhansl, Some(("Eb minor", 0.880, 0.869))),
+        ("relative coin flip", KeyProfile::Edm, Some(("C major", 0.133, 0.853))),
+        ("relative coin flip", KeyProfile::Krumhansl, Some(("C major", 0.051, 0.821))),
+        ("riff over drums", KeyProfile::Edm, Some(("E minor", 0.191, 0.848))),
+        ("riff over drums", KeyProfile::Krumhansl, Some(("E minor", 0.167, 0.819))),
+        ("power chords", KeyProfile::Edm, Some(("B major", 0.000, 0.833))),
+        ("power chords", KeyProfile::Krumhansl, Some(("B major", 0.000, 0.844))),
+        ("whole-tone chords", KeyProfile::Edm, Some(("Bb major", 0.000, 0.247))),
+        ("whole-tone chords", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.242))),
+        ("drums", KeyProfile::Edm, Some(("D minor", 0.000, 0.401))),
+        ("drums", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.336))),
+        ("clicks", KeyProfile::Edm, Some(("B minor", 0.000, 0.356))),
+        ("clicks", KeyProfile::Krumhansl, Some(("B minor", 0.000, 0.393))),
+        ("noise", KeyProfile::Edm, Some(("G minor", 0.000, 0.338))),
+        ("noise", KeyProfile::Krumhansl, Some(("D minor", 0.000, 0.362))),
+        ("short clip", KeyProfile::Edm, None),
+        ("short clip", KeyProfile::Krumhansl, None),
+    ];
+
+    fn pinned_material() -> Vec<(&'static str, Vec<f32>)> {
+        let c: [f32; 4] = [48.0, 52.0, 55.0, 60.0];
+        let am: [f32; 4] = [45.0, 48.0, 52.0, 57.0];
+        let wt1: [f32; 3] = [60.0, 64.0, 68.0];
+        let wt2: [f32; 3] = [62.0, 66.0, 70.0];
+        let mut n = testsig::Noise::new(7);
+        vec![
+            (
+                "C major",
+                testsig::chord_progression(0, Quality::Major, 8.0, SR),
+            ),
+            (
+                "A minor",
+                testsig::chord_progression(9, Quality::Minor, 8.0, SR),
+            ),
+            (
+                "F# major",
+                testsig::chord_progression(6, Quality::Major, 8.0, SR),
+            ),
+            (
+                "Eb minor",
+                testsig::chord_progression(3, Quality::Minor, 8.0, SR),
+            ),
+            (
+                "Eb minor over drums",
+                over_drums(
+                    &testsig::chord_progression(3, Quality::Minor, 12.0, SR),
+                    1.0,
+                    0.8,
+                ),
+            ),
+            (
+                "relative coin flip",
+                testsig::note_sequence(&[&c, &am, &c, &am], 12.0, SR),
+            ),
+            ("riff over drums", over_drums(&three_note_riff(), 1.0, 0.8)),
+            ("power chords", power_chords()),
+            (
+                "whole-tone chords",
+                testsig::note_sequence(&[&wt1, &wt2, &wt1, &wt2], 12.0, SR),
+            ),
+            (
+                "drums",
+                testsig::groove(128.0, 12.0, SR, Groove::FourOnFloor),
+            ),
+            ("clicks", testsig::click_track(122.0, 12.0, SR)),
+            (
+                "noise",
+                (0..SR as usize * 8)
+                    .map(|_| n.next_sample() * 0.3)
+                    .collect(),
+            ),
+            (
+                "short clip",
+                testsig::chord_progression(0, Quality::Major, 1.0, SR),
+            ),
+        ]
+    }
+
+    #[test]
+    fn key_output_only_changes_with_the_scorer_version() {
+        // selecta targets stored keys by their `@N` label, so an output change
+        // under an unchanged label strands every key measured before it.
+        let stft = Stft::for_chroma(SR);
+        let mut observed = Vec::new();
+        for (name, sig) in pinned_material() {
+            let chroma = chromagram(&stft.magnitudes(&sig, SR));
+            for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+                let got = estimate_key_scored(&chroma, profile)
+                    .map(|(e, s)| (e.key, e.confidence, s.correlation));
+                observed.push((name, profile, got));
+            }
+        }
+        // Loose enough for libm differences between platforms, far tighter
+        // than any deliberate scoring change moves a number.
+        let matches = observed.len() == PINNED.len()
+            && observed
+                .iter()
+                .zip(PINNED)
+                .all(|((n, p, got), (pn, pp, want))| {
+                    n == pn
+                        && p == pp
+                        && match (got, want) {
+                            (None, None) => true,
+                            (Some((k, c, r)), Some((wk, wc, wr))) => {
+                                k == wk && (c - wc).abs() <= 0.005 && (r - wr).abs() <= 0.005
+                            }
+                            _ => false,
+                        }
+                });
+        let table: String = observed
+            .iter()
+            .map(|(n, p, got)| match got {
+                None => format!("    ({n:?}, KeyProfile::{p:?}, None),\n"),
+                Some((k, c, r)) => {
+                    format!("    ({n:?}, KeyProfile::{p:?}, Some(({k:?}, {c:.3}, {r:.3}))),\n")
+                }
+            })
+            .collect();
+        assert!(
+            matches,
+            "key scorer output changed: bump KEY_SCORER_VERSION, then set \
+             PINNED_VERSION to match and PINNED to:\n{table}"
+        );
+        assert_eq!(
+            PINNED_VERSION, KEY_SCORER_VERSION,
+            "KEY_SCORER_VERSION and PINNED_VERSION move together"
+        );
     }
 
     #[test]
