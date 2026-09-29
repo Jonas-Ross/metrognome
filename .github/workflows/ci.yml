@@ -6,9 +6,10 @@ on:
     branches: [main]
   pull_request:
 
+# A new PR push supersedes the last; every main commit keeps its own run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
