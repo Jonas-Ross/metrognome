@@ -1098,3 +1098,38 @@ from an accident; it only makes forgetting the label impossible.
 
 Tempo gets the rule in `CLAUDE.md` but not the test yet: #15 was moving tempo
 output while this was written, so its pin is a follow-up.
+
+## 40. Releases are one universal macOS binary, built by a hand-written workflow
+
+Selecta's first outside users are technical Claude users on Macs, so the
+install is `brew install` rather than `cargo build`. A `v*` tag builds both
+macOS targets, fuses them with `lipo`, and publishes one tarball plus its
+SHA-256 to a GitHub Release. The formula has one URL, and no one has to know
+which chip they have.
+
+**A hand-written workflow, not cargo-dist.** cargo-dist would generate a larger
+workflow plus shell and PowerShell installers for platforms metrognome does
+not support, and it becomes a tool every release depends on. The pipeline
+here is two short scripts that a PR can run end to end.
+
+**Ad-hoc signed, not notarized.** Apple Silicon will not run an unsigned
+binary, and `lipo` output is re-signed ad-hoc so both slices carry a valid
+signature. Homebrew's download sets no quarantine flag, so Gatekeeper never
+asks. A browser download of the tarball does get quarantined; notarization
+waits for the desktop app, which needs a paid Developer ID anyway.
+
+**The tag must equal the Cargo version, and the build refuses a mismatch.**
+`metrognome --version` is what the formula's test checks and what selecta
+will read, so a tag that disagreed with it would ship a binary that lies
+about itself.
+
+**The tap update is gated on a secret.** Pushing to `Jonas-Ross/homebrew-tap`
+needs a token with write access to that repository. Without the
+`HOMEBREW_TAP_TOKEN` secret the release still publishes and the job warns,
+so a missing token never blocks a release.
+
+**A PR that touches the pipeline runs it without publishing.** It builds,
+packages, runs `selftest` on the packaged binary and syntax-checks the
+rendered formula, so a broken release shows up in review rather than on the
+tag. A separate macOS CI job runs the test suite on every PR, because
+nothing else here builds for the platform that ships.

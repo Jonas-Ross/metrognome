@@ -78,7 +78,13 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 | `scripts/check-no-binaries.sh` | Fail on a tracked SQLite database or large binary |
 | `cargo run -p metrognome-cli -- <args>` | Run the CLI in place |
 
-CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`.
+CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`,
+and runs the tests again on macOS.
+
+To release, bump `version` in the root `Cargo.toml` (and `Cargo.lock`) in a PR,
+merge it, then push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
+`.github/workflows/release.yml` refuses a tag that disagrees with the Cargo
+version, publishes a universal macOS tarball, and updates the Homebrew tap.
 
 ## Git workflow
 
