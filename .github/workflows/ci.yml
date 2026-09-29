@@ -102,6 +102,11 @@ jobs:
     if: needs.tier.outputs.tier != 'jonas' && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # id-token only matters if the action falls back to its OIDC app token.
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
