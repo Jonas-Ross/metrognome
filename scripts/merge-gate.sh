@@ -18,13 +18,13 @@ latest_review() {
         | "\(.state) \(.commit_id)"' | tail -n 1
 }
 
-# The change a commit makes relative to where it meets the base branch, byte
-# for byte except line positions and blob ids, which merging the base in moves.
-# `git patch-id` would also drop whitespace, which a shell string can depend on.
-change_id() {
-  git diff --binary --full-index "$(git merge-base "origin/$BASE_REF" "$1")" "$1" |
-    sed -E -e '/^index [0-9a-f]+\.\.[0-9a-f]+/d' -e 's/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/' |
-    sha256sum | cut -d' ' -f1
+# The tree a commit produces merged into the base branch as it is now. Equal
+# trees mean the head lands exactly what was approved, wherever main has moved;
+# a conflict yields no tree, so it needs a fresh approval.
+merged_tree() {
+  local out
+  out=$(git merge-tree --write-tree "origin/$BASE_REF" "$1" 2> /dev/null) || return 1
+  echo "${out%%$'\n'*}"
 }
 
 # decide <state> <auto> <description>
@@ -51,7 +51,9 @@ why="tier $TIER, validate $VALIDATE_RESULT, Claude review $REVIEW_RESULT"
 [ "$state" = APPROVED ] || decide pending false "needs $APPROVER's approval ($why)"
 git cat-file -e "$approved_sha^{commit}" 2> /dev/null ||
   decide pending false "approved commit is gone; needs a fresh approval ($why)"
-[ "$(change_id "$approved_sha")" = "$(change_id "$HEAD_SHA")" ] ||
+approved_tree=$(merged_tree "$approved_sha") || approved_tree=
+head_tree=$(merged_tree "$HEAD_SHA") || head_tree=
+[ -n "$approved_tree" ] && [ "$approved_tree" = "$head_tree" ] ||
   decide pending false "change moved since approval; needs a fresh one ($why)"
 
 decide success false "$APPROVER approved this change ($why)"

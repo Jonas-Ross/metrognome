@@ -1137,12 +1137,17 @@ unreviewed. It is skipped on `jonas`-tier PRs, where Jonas is the reviewer.
 **An approval covers a change, not a commit.** Keeping a PR up to date with
 `main` means merging `main` in, which moves the head; requiring an approval on
 the exact head would ask Jonas to re-approve after every update. The gate
-hashes the PR's diff from its merge base at the approved commit and at the head,
-byte for byte apart from line positions and blob ids, so merging `main` keeps
-the approval and any edit to the change itself, down to whitespace, drops it.
-`git patch-id` was the first choice and is wrong here: it ignores whitespace,
-which a shell string can depend on. A later
+merges the approved commit and the head each into `main` as it is now
+(`git merge-tree`) and requires the same tree, so merging `main` in keeps the
+approval, and any other edit, down to whitespace or which of two identical
+blocks changed, drops it. So does a conflict with `main`. Comparing diffs came
+first and was wrong both ways Codex found: `git patch-id` ignores whitespace,
+and a diff stripped of line numbers cannot tell identical blocks apart. A later
 changes-requested review from Jonas blocks every tier.
+
+A fork's PR gets a read-only token, so its gate cannot post `merge-gate` at all;
+Jonas merges those by hand until outside contributions make a trusted
+`workflow_run` poster worth building.
 
 The merge itself is GitHub's native auto-merge (squash), enabled on each PR;
 `merge-gate` is a required commit status the gate job posts, so it fires only

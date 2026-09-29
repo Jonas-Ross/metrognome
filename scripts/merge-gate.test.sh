@@ -17,7 +17,8 @@ export PATH="$root/bin:$PATH" REPO=o/r PR_NUMBER=1 BASE_REF=main APPROVER=Jonas-
 git init -q -b main "$root/upstream"
 cd "$root/upstream"
 git config user.email test@example.com && git config user.name test
-printf '%s\n' a b c d e f g h i j k l m n o p q r s t > code && echo x > other && git add -A && git commit -qm base
+printf '%s\n' a b c d e f g h i j k l m n o p q r s t > code && echo x > other
+printf '%s\n' 1 2 3 x 4 5 6 7 8 9 1 2 3 x 4 5 6 > twin && git add -A && git commit -qm base
 git clone -q "$root/upstream" "$root/pr"
 cd "$root/pr"
 git config user.email test@example.com && git config user.name test
@@ -75,5 +76,19 @@ git reset -q --hard "$before"
 
 sed -i.bak 's/^s$/S/' code && rm code.bak && git commit -qam 'more change'
 FAKE_REVIEWS="APPROVED $approved" expect pending 'approval does not cover a later edit'
+
+# The same edit in the other of two identical blocks is a different change.
+git reset -q --hard "$before"
+sed -i.bak '4s/x/X/' twin && rm twin.bak && git commit -qam 'first twin'
+approved=$(git rev-parse HEAD)
+FAKE_REVIEWS="APPROVED $approved" expect approved 'approved at the first twin'
+sed -i.bak -e '4s/X/x/' -e '14s/x/X/' twin && rm twin.bak && git commit -qam 'second twin instead'
+FAKE_REVIEWS="APPROVED $approved" expect pending 'approval does not move to the second twin'
+
+# main conflicts with the approved change: nothing to compare against.
+git reset -q --hard "$approved"
+(cd "$root/upstream" && sed -i.bak 's/^J$/j/;s/^j$/JJ/' code && rm code.bak && git commit -qam 'main conflicts')
+git fetch -q origin
+FAKE_REVIEWS="APPROVED $approved" expect pending 'approval does not survive a conflict with main'
 
 [ "$failures" -eq 0 ] || { printf '%d failed\n' "$failures"; exit 1; }
