@@ -1125,9 +1125,11 @@ instructions at any depth (`CLAUDE.md`, `AGENTS.md`, `.claude/`), `validate.rs`
 and `testsig.rs` are the grader; a PR that could edit its grader and then pass
 it has graded itself. So "CI config merges on its own" from the
 original proposal does not hold for this repo: every CI change needs Jonas. The
-gate still runs from the PR's own workflow, so it stops a thread's honest
-mistake, not a deliberate one; the only authors with write access are Jonas and
-his agents, and a fork's PR gets no secrets, so no Claude review, so `jonas`.
+tier and gate scripts run from the base branch's copy, so a buggy edit to them
+cannot pass itself. The workflow still comes from the PR, so the gate stops a
+thread's honest mistake, not a deliberate one; the only authors with write
+access are Jonas and his agents, and a fork's PR gets no secrets, so no Claude
+review, so `jonas`.
 
 **The Claude review is a separate reviewer, not the author's self-review.**
 Codex skips `claude[bot]` PRs, so `anthropics/claude-code-action` reviews the
