@@ -1157,5 +1157,6 @@ job emails him on every push, which is noise for a state he already knows. A
 review from Jonas re-runs just the gate job (`merge-gate-review.yml`), so an
 approval merges without anyone re-running CI. That re-run needs a
 `MERGE_GATE_TOKEN` secret: `GITHUB_TOKEN` gets a 403 re-running a job. Without
-it the review stands but the gate has to be re-run by hand, and a
-changes-requested review cannot stop an auto-merge the gate already passed.
+it the review stands but the gate has to be re-run by hand. A changes-requested
+review also turns auto-merge off at once, so a gate that already passed cannot
+merge past it; the next push turns it back on.

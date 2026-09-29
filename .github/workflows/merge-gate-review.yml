@@ -18,7 +18,19 @@ jobs:
     if: github.event.review.user.login == 'Jonas-Ross' && (github.event.action == 'dismissed' || github.event.review.state != 'commented')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
+      # A gate that read the reviews before this one can still pass; turning
+      # auto-merge off now stops that pass from merging.
+      - if: github.event.review.state == 'changes_requested'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTO: ${{ github.event.pull_request.auto_merge != null }}
+        run: |
+          if [ "$AUTO" = true ]; then gh pr merge --disable-auto "$PR_URL"; fi
       - env:
           # GITHUB_TOKEN gets a 403 re-running a job, so this needs a fine-grained
           # token with Actions read/write on this repository.
