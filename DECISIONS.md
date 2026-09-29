@@ -1147,4 +1147,7 @@ changes-requested review from Jonas blocks every tier.
 The merge itself is GitHub's native auto-merge (squash), enabled on each PR;
 `merge-gate` is a required check, so it fires only when the gate passes. A
 review from Jonas re-runs just the gate job (`merge-gate-review.yml`), so an
-approval merges without anyone re-running CI.
+approval merges without anyone re-running CI. That re-run needs a
+`MERGE_GATE_TOKEN` secret: `GITHUB_TOKEN` gets a 403 re-running a job. Without
+it the review stands but the gate has to be re-run by hand, and a
+changes-requested review cannot stop an auto-merge the gate already passed.
