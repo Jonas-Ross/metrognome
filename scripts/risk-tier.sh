@@ -13,13 +13,15 @@ set -euo pipefail
 base=$(git merge-base "$1" "$2")
 head=$2
 
-# Every changed line of a file is the named constant, so a DSP change can bump
-# its cache version without the version's home dragging it to `jonas`.
-only_const_changed() {
-  git diff -U0 "$base" "$head" -- "$2" |
-    grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' |
-    grep -qvE "^[+-]pub const $1: [A-Za-z0-9_]+ = [0-9]+;\$" && return 1
-  return 0
+# The file's only change raises ALGORITHM_VERSION, so a DSP change can bump its
+# cache version without the version's home dragging it to `jonas`. Read in full,
+# not with `grep -q`, whose early exit SIGPIPEs the diff under pipefail.
+algorithm_bump_only() {
+  local lines old new
+  lines=$(git diff -U0 "$base" "$head" -- "$1" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' || true)
+  old=$(sed -nE 's/^-pub const ALGORITHM_VERSION: u32 = ([0-9]+);$/\1/p' <<< "$lines")
+  new=$(sed -nE 's/^\+pub const ALGORITHM_VERSION: u32 = ([0-9]+);$/\1/p' <<< "$lines")
+  [ "$(wc -l <<< "$lines")" -eq 2 ] && [ -n "$old" ] && [ -n "$new" ] && [ "$new" -gt "$old" ]
 }
 
 classify() {
@@ -36,7 +38,7 @@ classify() {
       crates/metrognome/src/key.rs | crates/metrognome/src/pipeline.rs | \
       crates/metrognome/src/decode.rs) echo validate ;;
     crates/metrognome/src/lib.rs)
-      if only_const_changed ALGORITHM_VERSION "$1"; then echo validate; else echo jonas; fi
+      if algorithm_bump_only "$1"; then echo validate; else echo jonas; fi
       ;;
     *) echo jonas ;;
   esac

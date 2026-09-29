@@ -45,6 +45,13 @@ echo x >> crates/metrognome/src/tempo.rs
 sed -i.bak 's/= 10;/= 11;/' crates/metrognome/src/lib.rs && rm crates/metrognome/src/lib.rs.bak
 expect validate 'dsp change bumping ALGORITHM_VERSION'
 fresh_repo; echo 'pub fn g() {}' >> crates/metrognome/src/lib.rs; expect jonas 'other lib.rs change'
+fresh_repo
+sed -i.bak 's/= 10;/= 9;/' crates/metrognome/src/lib.rs && rm crates/metrognome/src/lib.rs.bak
+expect jonas 'ALGORITHM_VERSION lowered'
+fresh_repo
+sed -i.bak 's/= 10;/= 11;/' crates/metrognome/src/lib.rs && rm crates/metrognome/src/lib.rs.bak
+{ echo 'pub fn g() {}'; for _ in $(seq 20000); do echo '// padding past the pipe buffer'; done; } >> crates/metrognome/src/lib.rs
+expect jonas 'lib.rs edit hidden in a long diff'
 fresh_repo; echo x >> crates/metrognome/src/validate.rs; expect jonas 'the yardstick'
 fresh_repo; echo x >> crates/metrognome/src/dsp.rs; echo x >> .github/workflows/ci.yml; expect jonas 'dsp plus workflow'
 fresh_repo; echo x >> README.md; echo x >> crates/metrognome/src/types.rs; expect jonas 'docs plus contract'
