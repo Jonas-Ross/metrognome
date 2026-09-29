@@ -156,10 +156,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          AUTO: ${{ steps.gate.outputs.auto }}
         run: |
           gh label create auto-ok --color 0e8a16 --description 'Merges without Jonas once CI and review pass' --force
           gh label create needs-jonas --color d93f0b --description 'Merges only with Jonas approval' --force
-          if [ "${{ steps.gate.outputs.auto }}" = true ]; then
+          if [ "$AUTO" = true ]; then
             gh pr edit "$PR" --add-label auto-ok --remove-label needs-jonas
           else
             gh pr edit "$PR" --add-label needs-jonas --remove-label auto-ok
