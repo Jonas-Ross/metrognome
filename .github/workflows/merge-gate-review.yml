@@ -24,7 +24,7 @@ jobs:
     steps:
       # A gate that read the reviews before this one can still pass; turning
       # auto-merge off now stops that pass from merging.
-      - if: github.event.review.state == 'changes_requested'
+      - if: github.event.action == 'dismissed' || github.event.review.state == 'changes_requested'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
