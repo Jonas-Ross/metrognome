@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ["site/**", "crates/metrognome/**", "crates/metrognome-wasm/**", ".github/workflows/pages.yml"]
+    paths: ["site/**", "crates/metrognome/**", "crates/metrognome-wasm/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

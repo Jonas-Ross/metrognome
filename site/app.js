@@ -356,13 +356,16 @@ function play() {
 async function takeFile(file) {
   if (!file) return;
   stop();
-  state.run++;
+  const run = ++state.run;
   status(`Decoding ${file.name}…`);
   try {
     const samples = await decodeFile(file);
+    // Another file or the loop was picked while this one decoded.
+    if (run !== state.run) return;
     if (samples.length < SR * 5) throw new Error("it is shorter than five seconds");
     await load(samples, file.name);
   } catch (err) {
+    if (run !== state.run) return;
     status(`Could not read ${file.name}: ${err.message || "your browser cannot decode this format"}. Try an MP3, AAC or WAV file.`, null, true);
   }
 }
