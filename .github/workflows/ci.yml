@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Main only: a push run on a PR's branch would report `merge-gate` as skipped,
+  # and branch protection counts a skipped required check as passed.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:
