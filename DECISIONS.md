@@ -1098,3 +1098,59 @@ from an accident; it only makes forgetting the label impossible.
 
 Tempo gets the rule in `CLAUDE.md` but not the test yet: #15 was moving tempo
 output while this was written, so its pin is a follow-up.
+
+## 40. PRs merge by risk tier; the gate cannot be graded by the change it gates
+
+Jonas approving every PR made him the bottleneck, and most PRs here are docs,
+tests or DSP changes that `validate` measures better than a read-through does.
+So a `gate` job decides, from the files a PR touches
+(`scripts/risk-tier.sh`), whether it can merge without him:
+
+- **auto**: Markdown other than agent instructions, `crates/*/tests/`,
+  `Cargo.lock`, `rust-toolchain.toml`. Merges once CI and the Claude review pass.
+- **validate**: the analysis path (`dsp`, `tempo`, `key`, `decode`, and an
+  `ALGORITHM_VERSION`-only edit to `lib.rs`), but not `pipeline`, which also
+  drives the cache that `validate` bypasses. Also needs `metrognome validate`
+  on the PR not to lose, on any reference track, a tempo within
+  tolerance, a tempo a consumer keeps, or an agreeing key, against its base in
+  the same job. A row that errors on either side fails it: an inconclusive
+  check is not a pass.
+- **jonas**: everything else, including anything unlisted, so a new kind of file
+  fails closed. That covers the JSON contract, resolution and the rate limiter,
+  and the cache.
+
+Three rules keep the gate honest, and each of them costs something:
+
+**The gate's own inputs are `jonas`.** Workflows, `scripts/`, agent
+instructions at any depth (`CLAUDE.md`, `AGENTS.md`, `.claude/`), `validate.rs`
+and `testsig.rs` are the grader; a PR that could edit its grader and then pass
+it has graded itself. So "CI config merges on its own" from the
+original proposal does not hold for this repo: every CI change needs Jonas. The
+tier script runs from the base branch's copy, so a buggy edit to it cannot
+pass itself. The workflow still comes from the PR, so the gate stops a
+thread's honest mistake, not a deliberate one; the only authors with write
+access are Jonas and his agents, and a fork's PR gets no secrets, so no Claude
+review, so `jonas`.
+
+**The Claude review is a separate reviewer, not the author's self-review.**
+Codex skips `claude[bot]` PRs, so `anthropics/claude-code-action` reviews the
+diff with read-only tools and returns a structured `pass`/`block`. With no token
+configured it fails, which routes everything to Jonas instead of merging
+unreviewed. It is skipped on `jonas`-tier PRs, where Jonas is the reviewer.
+
+**Nothing waits in a pending or red state for Jonas.** The gate job turns
+GitHub's native auto-merge (squash) on for a PR whose tier passed and off for one
+that did not, labels it `auto-ok` or `needs-jonas`, and always finishes green. A
+`needs-jonas` PR merges when Jonas merges it, or tells a thread to. The first
+design posted a required `merge-gate` commit status that sat `pending` until he
+approved, and it failed on two counts. Sessions watching CI waited on it
+forever. And threads open PRs as Jonas, so GitHub will not let him approve or
+request changes on them, which left the approval it waited for impossible to
+give. For the same reason `needs-jonas` is not enforced by a required review or
+CODEOWNERS: agents are told never to turn auto-merge on themselves, and the gate
+turns it back off on every push that lands a `jonas` tier. A red job means
+something actually broke (CI, `validate`, or a Claude review block), which is
+the only kind of failure email left.
+
+A fork's PR gets a read-only token, so its gate cannot turn auto-merge on; Jonas
+merges those by hand.
