@@ -46,6 +46,10 @@ jobs:
             --json databaseId --jq '.[0].databaseId // empty')
           [ -n "$run" ] || { echo "no CI run on $SHA yet; its gate reads the review when it runs"; exit 0; }
           # A gate still running may have read the reviews before this one landed.
-          gh run watch "$run" -R "$REPO" > /dev/null || true
+          # Polled, not `gh run watch`, which needs checks:read that a fine-grained
+          # token cannot have.
+          until [ "$(gh run view "$run" -R "$REPO" --json status --jq .status)" = completed ]; do
+            sleep 20
+          done
           job=$(gh run view "$run" -R "$REPO" --json jobs --jq '.jobs[] | select(.name == "gate") | .databaseId')
           gh run rerun "$run" -R "$REPO" --job "$job"
