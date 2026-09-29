@@ -1,9 +1,15 @@
 name: CI
 
 on:
+  # A branch with a PR would otherwise run twice per push.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+# A new PR push supersedes the last; every main commit keeps its own run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,14 +28,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Bumped when the build layout changes: an exact key hit never re-saves.
+          prefix-key: v1-rust
+          # PR branches restore main's cache; saving their own only evicts it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
-      - name: Accuracy selftest
-        # Synthesizes and analyzes ten 30-second clips, so it runs in release
-        # and is marked #[ignore] for the normal suite. It is the gate that
-        # catches an octave or metric regression in tempo estimation.
-        run: cargo test --workspace --release -- --ignored
+        # One optimized build runs the suite and the #[ignore]d accuracy
+        # selftest, the gate for octave and metric errors in tempo.
+        run: cargo test --workspace --profile ci -- --include-ignored
