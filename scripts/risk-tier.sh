@@ -30,7 +30,8 @@ classify() {
     # grader.
     .github/* | scripts/* | LICENSE) echo jonas ;;
     # Agent instructions nest, so they are the gate's inputs at any depth.
-    CLAUDE.md | */CLAUDE.md | AGENTS.md | */AGENTS.md | .claude/* | */.claude/* | .codex/* | */.codex/*) echo jonas ;;
+    CLAUDE*.md | */CLAUDE*.md | AGENTS*.md | */AGENTS*.md | REVIEW.md | */REVIEW.md | \
+      .claude/* | */.claude/* | .codex/* | */.codex/*) echo jonas ;;
     # The yardsticks the validate tier is measured against.
     crates/metrognome/src/validate.rs | crates/metrognome/src/testsig.rs) echo jonas ;;
     # A manifest can add a dependency, which needs a stated reason.
