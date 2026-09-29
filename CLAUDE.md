@@ -1,10 +1,11 @@
 # metrognome
 
 A Rust CLI that estimates BPM and musical key from short audio clips —
-in practice, the 30-second iTunes preview for a track. It exists because
+in practice, the 30-second iTunes preview for a track. It started because
 [selecta](https://github.com/Jonas-Ross/selecta) needs audio features for a
 library of DRM'd streaming tracks and AcousticBrainz is dead post-2022. selecta
-calls this binary as a subprocess, so the machine interface comes first.
+is still its main consumer, calling this binary as a subprocess, but it is a
+standalone tool others install on their own, so the machine interface comes first.
 
 `README.md` is the user-facing overview. `DECISIONS.md` records design forks.
 
