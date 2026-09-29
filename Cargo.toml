@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/metrognome", "crates/metrognome-cli"]
+members = ["crates/metrognome", "crates/metrognome-cli", "crates/metrognome-wasm"]
 resolver = "2"
 
 [workspace.package]
