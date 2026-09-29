@@ -74,11 +74,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build base and head
         # HEAD is the PR merged into its base, so HEAD^1 is exactly what it
-        # would land on.
+        # would land on. Separate target dirs: the base worktree's fresher mtimes
+        # would otherwise leave the head build looking up to date.
         run: |
           git worktree add "$RUNNER_TEMP/base" HEAD^1
-          (cd "$RUNNER_TEMP/base" && cargo build --release -p metrognome-cli --target-dir "$GITHUB_WORKSPACE/target")
-          cp target/release/metrognome "$RUNNER_TEMP/metrognome-base"
+          (cd "$RUNNER_TEMP/base" && cargo build --release -p metrognome-cli --target-dir "$RUNNER_TEMP/base-target")
+          cp "$RUNNER_TEMP/base-target/release/metrognome" "$RUNNER_TEMP/metrognome-base"
           cargo build --release -p metrognome-cli
       - name: Validate
         # Back to back, so both see the same store answers. `validate` exits 1

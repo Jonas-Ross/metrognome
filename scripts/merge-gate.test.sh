@@ -17,12 +17,12 @@ export PATH="$root/bin:$PATH" REPO=o/r PR_NUMBER=1 BASE_REF=main APPROVER=Jonas-
 git init -q -b main "$root/upstream"
 cd "$root/upstream"
 git config user.email test@example.com && git config user.name test
-printf 'a\nb\nc\nd\ne\nf\n' > code && echo x > other && git add -A && git commit -qm base
+printf '%s\n' a b c d e f g h i j k l m n o p q r s t > code && echo x > other && git add -A && git commit -qm base
 git clone -q "$root/upstream" "$root/pr"
 cd "$root/pr"
 git config user.email test@example.com && git config user.name test
 git checkout -qb pr
-sed -i.bak 's/^b$/B/' code && rm code.bak && git commit -qam change
+sed -i.bak 's/^j$/J/' code && rm code.bak && git commit -qam change
 approved=$(git rev-parse HEAD)
 
 expect() {
@@ -59,7 +59,18 @@ FAKE_REVIEWS="APPROVED 0123456789abcdef0123456789abcdef01234567" expect blocked 
 git fetch -q origin && git merge -q --no-edit origin/main
 FAKE_REVIEWS="APPROVED $approved" expect approved 'approval survives merging main'
 
-sed -i.bak 's/^e$/E/' code && rm code.bak && git commit -qam 'more change'
+# Line positions move when main changes above the change; the change does not.
+(cd "$root/upstream" && sed -i.bak '1i\
+top' code && rm code.bak && git commit -qam 'main edits above')
+git fetch -q origin && git merge -q --no-edit origin/main
+FAKE_REVIEWS="APPROVED $approved" expect approved 'approval survives main shifting its lines'
+
+before=$(git rev-parse HEAD)
+sed -i.bak 's/^J$/J /' code && rm code.bak && git commit -qam 'whitespace only'
+FAKE_REVIEWS="APPROVED $approved" expect blocked 'approval does not cover a whitespace edit'
+git reset -q --hard "$before"
+
+sed -i.bak 's/^s$/S/' code && rm code.bak && git commit -qam 'more change'
 FAKE_REVIEWS="APPROVED $approved" expect blocked 'approval does not cover a later edit'
 
 [ "$failures" -eq 0 ] || { printf '%d failed\n' "$failures"; exit 1; }

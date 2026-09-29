@@ -1137,9 +1137,11 @@ unreviewed. It is skipped on `jonas`-tier PRs, where Jonas is the reviewer.
 **An approval covers a change, not a commit.** Keeping a PR up to date with
 `main` means merging `main` in, which moves the head; requiring an approval on
 the exact head would ask Jonas to re-approve after every update. The gate
-compares `git patch-id` of the PR's diff from its merge base at the approved
-commit and at the head, so merging `main` keeps the approval and any edit to the
-change itself, including a conflict resolution, drops it. A later
+hashes the PR's diff from its merge base at the approved commit and at the head,
+byte for byte apart from line positions and blob ids, so merging `main` keeps
+the approval and any edit to the change itself, down to whitespace, drops it.
+`git patch-id` was the first choice and is wrong here: it ignores whitespace,
+which a shell string can depend on. A later
 changes-requested review from Jonas blocks every tier.
 
 The merge itself is GitHub's native auto-merge (squash), enabled on each PR;

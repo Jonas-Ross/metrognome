@@ -17,11 +17,13 @@ latest_review() {
         | "\(.state) \(.commit_id)"' | tail -n 1
 }
 
-# The change a commit makes relative to where it meets the base branch. Stable
-# across merging the base in, so an approval survives an update from main but
-# not an edit to the change itself.
+# The change a commit makes relative to where it meets the base branch, byte
+# for byte except line positions and blob ids, which merging the base in moves.
+# `git patch-id` would also drop whitespace, which a shell string can depend on.
 change_id() {
-  git diff "$(git merge-base "origin/$BASE_REF" "$1")" "$1" | git patch-id --stable | cut -d' ' -f1
+  git diff --binary --full-index "$(git merge-base "origin/$BASE_REF" "$1")" "$1" |
+    sed -E -e '/^index [0-9a-f]+\.\.[0-9a-f]+/d' -e 's/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/' |
+    sha256sum | cut -d' ' -f1
 }
 
 fail() {
