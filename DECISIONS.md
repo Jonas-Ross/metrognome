@@ -1154,3 +1154,43 @@ the only kind of failure email left.
 
 A fork's PR gets a read-only token, so its gate cannot turn auto-merge on; Jonas
 merges those by hand.
+
+## 41. The browser demo runs the real DSP as WebAssembly, behind a raw ABI
+
+The marketing site's centrepiece is metrognome itself: a visitor drops a song
+and gets tempo and key computed in their own tab. A JavaScript port would drift
+from the estimator the moment either changed, so the page runs this crate.
+
+**The I/O moved behind a default `net` feature.** `cache`, `fetch`, `resolve`,
+`ratelimit` and `Analyzer` need tokio, reqwest and rusqlite, none of which
+build for `wasm32-unknown-unknown`. With the feature off, the crate is the
+DSP alone, which is the layering `CLAUDE.md` already asked for. The pure entry
+points moved from `pipeline` to a new `analyze` module; the re-exports at the
+crate root are unchanged. CI builds the wasm crate so a stray I/O import into
+the DSP fails the build instead of the site.
+
+**No wasm-bindgen.** `metrognome-wasm` exports four `extern "C"` functions
+(allocate, analyze, read result, free) and returns the same `Features` JSON the
+CLI emits, plus a normalized chroma for the page to draw. That keeps the build
+to one `cargo build --target wasm32-unknown-unknown` with no CLI tool to pin,
+at the cost of ~20 lines of pointer handling in `site/worker.js`. rayon compiles
+unchanged and runs `join` on the calling thread when there are no threads.
+
+**The browser decodes, not symphonia.** `decodeAudioData` already handles every
+format the browser plays and resamples to 44.1 kHz on the way. The engine sees
+mono PCM and a sample rate, exactly as from a preview.
+
+**Windows of 30 seconds.** Tempo was validated on preview clips, and analysis
+time grows faster than linearly with length (a 120 s clip takes about ten
+times a 30 s one), so the headline result reads the middle 30 seconds, like a
+preview would, and the rest of the track is read window by window. The
+per-window results are shown next to each other and never merged into a
+confidence of their own: agreement across windows is not something the
+estimator measured.
+
+**Key stays provisional on the page.** The key card carries the maturity badge,
+the confidence broken into its four factors, and a strike-through with a hint
+banner at or below the uncertainty threshold, same as the contract.
+
+The site lives in `site/` in this repo rather than its own: the wasm has to be
+built from this crate at the same commit, and Pages deploys it from here.

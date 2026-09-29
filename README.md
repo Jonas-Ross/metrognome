@@ -8,6 +8,12 @@ automates Apple Music and needs audio features for a library of DRM'd streaming
 tracks. Its usual upstream, AcousticBrainz, has no data for anything released
 after 2022. Preview clips are plain unencrypted AAC, so they can be analyzed.
 
+## Try it in a browser
+
+`site/` is the Selecta site, and its demo is this crate compiled to
+WebAssembly: drop in a song and it reports tempo and key without the audio
+leaving the tab. `site/build.sh` builds it; any static file server runs it.
+
 ## Interface
 
 ```

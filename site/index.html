@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Selecta</title>
+<meta name="description" content="Selecta knows the tempo, key and history of every track in your Apple Music library, and hands it to Claude to build playlists. Try its analysis engine, metrognome, on any song, right in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+<header class="masthead">
+  <span class="mark">Selecta</span>
+  <nav aria-label="Sections">
+    <a href="#try">Try it</a>
+    <a href="#how">How it works</a>
+    <a href="#rules">House rules</a>
+    <a href="#get">Get it</a>
+  </nav>
+</header>
+
+<section class="hero" aria-labelledby="hero-title">
+  <h1 id="hero-title" class="wordmark" aria-label="Selecta">
+    <span class="ink ink-blue" aria-hidden="true">SELECTA</span>
+    <span class="ink ink-pink" aria-hidden="true">SELECTA</span>
+  </h1>
+  <div class="hero-copy">
+    <p class="kicker">For Apple Music libraries · macOS · local-first</p>
+    <p class="pitch">Your library already has the answers. Selecta reads the tempo, key and listening history of every track you own and hands them to Claude, which builds the playlist. You keep the taste.</p>
+    <p class="engine">Hearing is done by <b>metrognome</b>, its analysis engine. It is running in this tab right now.</p>
+  </div>
+
+  <div class="deck" id="try">
+    <label class="drop" id="drop" for="file">
+      <input type="file" id="file" accept="audio/*,.m4a,.mp3,.wav,.flac,.ogg,.aac,.aiff">
+      <span class="platter" aria-hidden="true"><span class="groove"></span><span class="label"><span id="platter-bpm">124</span><small>BPM</small></span></span>
+      <span class="drop-text">
+        <b>Drop a track here</b>
+        <span>or tap to choose one. It is decoded and analyzed inside this tab. Nothing is uploaded.</span>
+      </span>
+    </label>
+    <div class="deck-bar">
+      <span class="now" id="now">Example: built-in 124 BPM loop in F minor</span>
+      <span class="deck-actions">
+        <button type="button" id="play" class="btn">Play with click</button>
+        <button type="button" id="loop" class="btn ghost">Built-in loop</button>
+      </span>
+    </div>
+    <div class="deck-bar">
+      <label class="profile" for="profile">Key templates
+        <select id="profile">
+          <option value="edm">Electronic (default)</option>
+          <option value="krumhansl">Classical and pop</option>
+        </select>
+      </label>
+    </div>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </div>
+</section>
+
+<section class="readout" aria-labelledby="readout-title">
+  <h2 id="readout-title" class="sr">Result</h2>
+
+  <article class="meter tempo" id="tempo-card">
+    <header>
+      <span class="label">Tempo</span>
+      <span class="badge ok" id="tempo-maturity">Validated</span>
+    </header>
+    <div class="big"><span id="bpm">124.0</span><small>BPM</small></div>
+    <div class="flag" id="tempo-flag" hidden>Hint only. Confidence is at or below 0.5, so treat this as a guess.</div>
+    <div class="conf"><span>Confidence</span><span class="bar"><i id="tempo-conf-bar"></i></span><b id="tempo-conf">0.96</b></div>
+    <p class="note">Folded into 90 to 180 BPM. A track at 87 can read as 174 and still be right, so the half and double are always listed.</p>
+    <ul class="chips" id="tempo-alts"></ul>
+  </article>
+
+  <article class="meter key" id="key-card">
+    <header>
+      <span class="label">Key</span>
+      <span class="badge prov" title="Key detection has not been checked against enough real recordings yet">Provisional</span>
+    </header>
+    <div class="big"><span id="keyname">F minor</span><small id="camelot">4A</small></div>
+    <div class="flag" id="key-flag" hidden>Hint only. Confidence is at or below 0.5, so treat this as a guess.</div>
+    <div class="conf"><span>Confidence</span><span class="bar"><i id="key-conf-bar"></i></span><b id="key-conf">0.86</b></div>
+    <dl class="factors" id="factors"></dl>
+    <ul class="chips" id="key-alts"></ul>
+  </article>
+
+  <article class="meter wheel-card">
+    <header><span class="label">Camelot wheel</span><span class="hint">outer major · inner minor</span></header>
+    <svg id="wheel" viewBox="-160 -160 320 320" role="img" aria-labelledby="wheel-desc"><desc id="wheel-desc">Camelot wheel with the detected key and the keys that mix cleanly with it highlighted.</desc></svg>
+    <p class="note" id="wheel-note"></p>
+  </article>
+
+  <article class="meter chroma-card">
+    <header><span class="label">Pitch fingerprint</span><span class="hint">energy per note, C to B</span></header>
+    <div class="chroma" id="chroma"></div>
+    <p class="note">The key is whichever of 24 key templates lines up best with these bars. Tall bars on the notes of one scale make a confident key; flat bars make a guess.</p>
+  </article>
+
+  <article class="meter timeline-card">
+    <header><span class="label">Across the track</span><span class="hint" id="timeline-hint">30-second windows</span></header>
+    <ol class="timeline" id="timeline"></ol>
+    <p class="note">metrognome is tuned on 30-second preview clips, so the headline reads the middle 30 seconds and each window below is read on its own. Faded windows are low confidence.</p>
+  </article>
+</section>
+
+<section class="how" id="how" aria-labelledby="how-title">
+  <h2 id="how-title">A brain and a pair of ears</h2>
+  <div class="pair">
+    <div class="part">
+      <p class="part-name">selecta</p>
+      <p class="part-role">The brain. TypeScript, runs on your Mac.</p>
+      <ul>
+        <li>Caches your whole Apple Music library: tracks, playlists, play and skip history.</li>
+        <li>Gives Claude tools to search it, inspect a tracklist and draft a playlist.</li>
+        <li>Writes the finished playlist back to Music, and only when you say save.</li>
+      </ul>
+    </div>
+    <div class="part">
+      <p class="part-name">metrognome</p>
+      <p class="part-role">The ears. Rust, the engine you just used.</p>
+      <ul>
+        <li>Finds tempo and key from a track's 30-second preview clip, since the music in your library is DRM-protected.</li>
+        <li>Every number ships with a confidence, a source and a flag when it is a guess.</li>
+        <li>Also a standalone CLI that prints JSON, if all you want is BPM and key.</li>
+      </ul>
+    </div>
+  </div>
+  <figure class="flow" aria-label="How a playlist gets built">
+    <ol>
+      <li><b>You ask</b><span>"Ninety minutes of warm-up house, starting slow."</span></li>
+      <li><b>Claude reads</b><span>Your tracks, what you play and skip, tempo and key.</span></li>
+      <li><b>Claude drafts</b><span>An ordered list you can reorder and audition.</span></li>
+      <li><b>You save</b><span>It lands in Music as a normal playlist.</span></li>
+    </ol>
+  </figure>
+</section>
+
+<section class="rules" id="rules" aria-labelledby="rules-title">
+  <h2 id="rules-title">House rules</h2>
+  <div class="rule-grid">
+    <div class="rule"><h3>Wrong data is worse than missing</h3><p>An estimate carries its confidence and where it came from. A shaky one is flagged as a hint, and a flagged key is never stored as fact.</p></div>
+    <div class="rule"><h3>Audio is heard, then forgotten</h3><p>Clips are analyzed in memory and dropped. No audio is written to disk, here or on your Mac.</p></div>
+    <div class="rule"><h3>No taste in the tools</h3><p>Selecta never ranks or recommends. It reports facts and does what it is told. Taste belongs to you and your model.</p></div>
+    <div class="rule"><h3>Local-first</h3><p>Your library lives in a database on your Mac. Only artist and title go out, to look up previews and public metadata.</p></div>
+  </div>
+</section>
+
+<section class="get" id="get" aria-labelledby="get-title">
+  <h2 id="get-title">Get it</h2>
+  <p>Selecta is early and not packaged yet. A Homebrew install is on the way. Until then it builds from source on a Mac with Node and Rust.</p>
+  <div class="repos">
+    <a class="repo" href="https://github.com/Jonas-Ross/selecta"><b>selecta</b><span>MCP server and library engine</span></a>
+    <a class="repo" href="https://github.com/Jonas-Ross/metrognome"><b>metrognome</b><span>Tempo and key CLI, and this page</span></a>
+  </div>
+</section>
+
+<footer class="foot">
+  <p>Works with Apple Music. Selecta is an independent project and is not affiliated with Apple.</p>
+  <p class="build" id="build"></p>
+</footer>
+
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -9,3 +9,6 @@
 *.db-shm
 *.sqlite
 *.sqlite3
+
+# Built by site/build.sh; Pages builds its own copy.
+/site/metrognome.wasm

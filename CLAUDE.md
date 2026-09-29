@@ -11,13 +11,16 @@ standalone tool others install on their own, so the machine interface comes firs
 
 ## Architecture
 
-Two crates, split so that analysis has no I/O assumptions baked in:
+Three crates, split so that analysis has no I/O assumptions baked in:
 
 - **`crates/metrognome`** — the library. DSP (`dsp`, `tempo`, `key`), resolution
   (`resolve`), fetching (`fetch`), cache (`cache`), shared types (`types`).
   Analysis entry points take PCM samples plus a sample rate, nothing more. The
   eventual goal is a background process that live-listens on macOS, so no
   analysis function may assume audio came from a preview URL.
+- **`crates/metrognome-wasm`** — the DSP as WebAssembly for the site in `site/`,
+  built against the library with its default `net` feature (all I/O) off. A raw
+  C ABI returning the CLI's `Features` JSON; no wasm-bindgen.
 - **`crates/metrognome-cli`** — the binary, named `metrognome`. Argument
   parsing, JSON serialization, logging setup. Thin: if it contains logic worth
   testing, that logic belongs in the library.
@@ -77,8 +80,10 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lint, warnings denied |
 | `scripts/check-no-binaries.sh` | Fail on a tracked SQLite database or large binary |
 | `cargo run -p metrognome-cli -- <args>` | Run the CLI in place |
+| `site/build.sh` | Build the wasm engine into `site/`; serve `site/` with any static server |
 
-CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`.
+CI gates on fmt, clippy with warnings denied, tests, the wasm build, and
+`scripts/check-no-binaries.sh`. `site/` deploys to GitHub Pages from `main`.
 The `gate` job then decides by the files a PR touches whether it needs Jonas, and turns
 auto-merge on or off to match (`scripts/risk-tier.sh`, DECISIONS.md 40).
 
