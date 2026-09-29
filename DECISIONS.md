@@ -1159,4 +1159,5 @@ approval merges without anyone re-running CI. That re-run needs a
 `MERGE_GATE_TOKEN` secret: `GITHUB_TOKEN` gets a 403 re-running a job. Without
 it the review stands but the gate has to be re-run by hand. A changes-requested
 review also turns auto-merge off at once, so a gate that already passed cannot
-merge past it; the next push turns it back on.
+merge past it;
+whoever addresses the review turns it back on.

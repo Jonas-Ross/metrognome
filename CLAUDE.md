@@ -88,7 +88,8 @@ the `merge-gate` status
 - [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>`, imperative, lowercase, no trailing period.
 - One concern per commit. Keep the build green.
-- Enable auto-merge (squash) on every PR you open; `merge-gate` holds it until the PR's
+- Enable auto-merge (squash) on every PR you open, and again after addressing a
+  changes-requested review, which turns it off; `merge-gate` holds it until the PR's
   tier is satisfied. Don't route around a `needs-jonas` label by splitting a change.
 - Work that depends on an unmerged PR is stacked, not held: `gh stack` where the extension
   is installed (`gh stack submit --open` — bare `--auto` opens drafts), otherwise branch
