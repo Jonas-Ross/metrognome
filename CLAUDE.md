@@ -78,7 +78,8 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 | `cargo run -p metrognome-cli -- <args>` | Run the CLI in place |
 
 CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`.
-The `merge-gate` job then decides whether a PR needs Jonas, by the files it touches
+The `gate` job then decides whether a PR needs Jonas, by the files it touches, and posts
+the `merge-gate` status
 (`scripts/risk-tier.sh`, DECISIONS.md 40).
 
 ## Git workflow

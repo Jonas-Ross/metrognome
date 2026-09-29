@@ -1103,7 +1103,7 @@ output while this was written, so its pin is a follow-up.
 
 Jonas approving every PR made him the bottleneck, and most PRs here are docs,
 tests or DSP changes that `validate` measures better than a read-through does.
-So a `merge-gate` job decides, from the files a PR touches
+So a `gate` job decides, from the files a PR touches
 (`scripts/risk-tier.sh`), whether it can merge without him:
 
 - **auto**: Markdown other than `CLAUDE.md`, `crates/*/tests/`, `Cargo.lock`,
@@ -1145,7 +1145,9 @@ which a shell string can depend on. A later
 changes-requested review from Jonas blocks every tier.
 
 The merge itself is GitHub's native auto-merge (squash), enabled on each PR;
-`merge-gate` is a required check, so it fires only when the gate passes. A
+`merge-gate` is a required commit status the gate job posts, so it fires only
+when the gate passes. Waiting on Jonas posts `pending`, not a failed job: a red
+job emails him on every push, which is noise for a state he already knows. A
 review from Jonas re-runs just the gate job (`merge-gate-review.yml`), so an
 approval merges without anyone re-running CI. That re-run needs a
 `MERGE_GATE_TOKEN` secret: `GITHUB_TOKEN` gets a 403 re-running a job. Without

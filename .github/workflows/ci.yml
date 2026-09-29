@@ -1,14 +1,18 @@
 name: CI
 
 on:
-  # Main only: a push run on a PR's branch would report `merge-gate` as skipped,
-  # and branch protection counts a skipped required check as passed.
+  # Main only: PR branches run through `pull_request`, and a second push run
+  # per commit doubled every run.
   push:
     branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -126,14 +130,17 @@ jobs:
           jq -r '"verdict: \(.verdict)\n\n\(.summary)\n", (.blocking[] | "- \(.)")' <<< "$OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$(jq -r .verdict <<< "$OUTPUT")" = pass ]
 
-  merge-gate:
+  # Posts the `merge-gate` commit status branch protection requires. Waiting on
+  # Jonas is `pending`, not a red job: a failed job emails him on every push.
+  gate:
     needs: [check, tier, validate, claude-review]
-    if: always() && github.event_name == 'pull_request'
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
       pull-requests: write
+      statuses: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,9 +159,19 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           APPROVER: Jonas-Ross
         run: scripts/merge-gate.sh >> "$GITHUB_OUTPUT"
+      - name: Status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          STATE: ${{ steps.gate.outputs.state }}
+          DESCRIPTION: ${{ steps.gate.outputs.description }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$STATE" -f context=merge-gate \
+            -f description="${DESCRIPTION:0:140}" -f target_url="$URL" > /dev/null
       - name: Label
         # Labels are for reading the PR list; the gate's result is what merges.
-        if: always() && steps.gate.outputs.auto != ''
+        if: steps.gate.outputs.auto != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
