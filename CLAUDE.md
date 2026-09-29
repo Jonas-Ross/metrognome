@@ -80,11 +80,14 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 
 CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`,
 and runs the tests again on macOS.
+The `gate` job then decides by the files a PR touches whether it needs Jonas, and turns
+auto-merge on or off to match (`scripts/risk-tier.sh`, DECISIONS.md 40).
 
 To release, bump `version` in the root `Cargo.toml` (and `Cargo.lock`) in a PR,
 merge it, then push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
 `.github/workflows/release.yml` refuses a tag that disagrees with the Cargo
-version, publishes a universal macOS tarball, and updates the Homebrew tap.
+version, publishes a universal macOS tarball, and updates the Homebrew tap
+(DECISIONS.md 41).
 
 ## Git workflow
 
@@ -92,6 +95,9 @@ version, publishes a universal macOS tarball, and updates the Homebrew tap.
 - [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>`, imperative, lowercase, no trailing period.
 - One concern per commit. Keep the build green.
+- Never turn on auto-merge or merge by hand: the `gate` job turns auto-merge on for
+  `auto-ok` PRs, and Jonas merges `needs-jonas` ones or tells you to. Don't route around
+  a `needs-jonas` label by splitting a change.
 - Work that depends on an unmerged PR is stacked, not held: `gh stack` where the extension
   is installed (`gh stack submit --open` — bare `--auto` opens drafts), otherwise branch
   off that PR's head and open the follow-up against it by hand. Branches are named per the

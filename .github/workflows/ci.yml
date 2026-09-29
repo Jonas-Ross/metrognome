@@ -6,10 +6,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 # A new PR push supersedes the last; every main commit keeps its own run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,6 +31,10 @@ jobs:
         # Cheapest gate first: the result cache is SQLite, and a database has
         # reached a repository once already.
         run: scripts/check-no-binaries.sh
+      - name: Gate scripts
+        run: |
+          scripts/risk-tier.test.sh
+          scripts/validate-compare.test.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -55,3 +66,128 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test
         run: cargo test --workspace --locked --profile ci
+
+  # The jobs below decide whether a PR can merge without Jonas; DECISIONS.md 40.
+  tier:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # The base's copy classifies the PR, so an edit to the classifier can't
+      # classify itself; the PR's copy only runs while the base has none.
+      - id: tier
+        run: |
+          git show HEAD^1:scripts/risk-tier.sh > "$RUNNER_TEMP/risk-tier.sh" ||
+            cp scripts/risk-tier.sh "$RUNNER_TEMP/risk-tier.sh"
+          echo "tier=$(bash "$RUNNER_TEMP/risk-tier.sh" HEAD^1 HEAD)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: tier
+    if: needs.tier.outputs.tier == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build base and head
+        # HEAD is the PR merged into its base, so HEAD^1 is exactly what it
+        # would land on. Separate target dirs: the base worktree's fresher mtimes
+        # would otherwise leave the head build looking up to date.
+        run: |
+          git worktree add "$RUNNER_TEMP/base" HEAD^1
+          (cd "$RUNNER_TEMP/base" && cargo build --release -p metrognome-cli --target-dir "$RUNNER_TEMP/base-target")
+          cp "$RUNNER_TEMP/base-target/release/metrognome" "$RUNNER_TEMP/metrognome-base"
+          cargo build --release -p metrognome-cli
+      - name: Validate
+        # Back to back, so both see the same store answers. `validate` exits 1
+        # on any tempo miss; the comparison is what gates.
+        run: |
+          "$RUNNER_TEMP/metrognome-base" validate > "$RUNNER_TEMP/base.json" || true
+          target/release/metrognome validate > "$RUNNER_TEMP/head.json" || true
+          scripts/validate-compare.sh "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  claude-review:
+    needs: tier
+    if: needs.tier.outputs.tier != 'jonas' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # id-token only matters if the action falls back to its OIDC app token.
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          # Threads open PRs as the Claude GitHub App.
+          allowed_bots: claude
+          prompt: |
+            You are the only reviewer of this pull request before it merges
+            unattended, so review adversarially. The change is `git diff HEAD^1 HEAD`;
+            read CLAUDE.md and the surrounding code for context.
+
+            Block on: a correctness bug, a broken hard rule from CLAUDE.md, a DSP
+            constant without its reason, a missed ALGORITHM_VERSION,
+            KEY_SCORER_VERSION or TEMPO_SOURCE bump, a test weakened or removed
+            without cause, or anything that changes the JSON contract. Style
+            preferences are not blocking. Pass when nothing blocking remains.
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"enum":["pass","block"]},"summary":{"type":"string"},"blocking":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking"]}'
+      - name: Verdict
+        env:
+          OUTPUT: ${{ steps.review.outputs.structured_output }}
+        run: |
+          jq -r '"verdict: \(.verdict)\n\n\(.summary)\n", (.blocking[] | "- \(.)")' <<< "$OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$(jq -r .verdict <<< "$OUTPUT")" = pass ]
+
+  # Turns auto-merge on when the tier passes and off when it does not, and never
+  # fails: waiting on Jonas is a label, not a red or pending check.
+  gate:
+    needs: [check, macos, tier, validate, claude-review]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          TIER: ${{ needs.tier.outputs.tier }}
+          RESULTS: ${{ needs.check.result == 'success' && needs.macos.result == 'success' && 'success' || 'failure' }}:${{ needs.validate.result }}:${{ needs.claude-review.result }}
+        run: |
+          case $TIER:$RESULTS in
+            auto:success:*:success | validate:success:success:success) auto=true ;;
+            *) auto=false ;;
+          esac
+          echo "tier $TIER, check:validate:review $RESULTS, merges without Jonas: $auto" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh label create auto-ok --color 0e8a16 --description 'Merges on its own once CI and review pass' --force
+          gh label create needs-jonas --color d93f0b --description 'Jonas merges this one' --force
+          # A failure here is a settings problem, so it warns instead of turning
+          # the job red.
+          if [ "$auto" = true ]; then
+            gh pr edit "$PR" --add-label auto-ok --remove-label needs-jonas
+            gh pr merge "$PR" --auto --squash || echo "::warning::could not turn on auto-merge; is it allowed in the repository settings?"
+          else
+            gh pr edit "$PR" --add-label needs-jonas --remove-label auto-ok
+            if [ "$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+              gh pr merge "$PR" --disable-auto || echo "::warning::could not turn off auto-merge"
+            fi
+          fi
