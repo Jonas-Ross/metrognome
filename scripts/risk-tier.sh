@@ -37,9 +37,10 @@ classify() {
     # A manifest can add a dependency, which needs a stated reason.
     Cargo.toml | */Cargo.toml) echo jonas ;;
     *.md | crates/*/tests/* | Cargo.lock | rust-toolchain.toml) echo auto ;;
+    # Only what validate exercises; pipeline.rs also drives the cache, which
+    # validate bypasses.
     crates/metrognome/src/dsp.rs | crates/metrognome/src/tempo.rs | \
-      crates/metrognome/src/key.rs | crates/metrognome/src/pipeline.rs | \
-      crates/metrognome/src/decode.rs) echo validate ;;
+      crates/metrognome/src/key.rs | crates/metrognome/src/decode.rs) echo validate ;;
     crates/metrognome/src/lib.rs)
       if algorithm_bump_only "$1"; then echo validate; else echo jonas; fi
       ;;

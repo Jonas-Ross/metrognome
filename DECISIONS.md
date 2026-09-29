@@ -1108,9 +1108,9 @@ So a `gate` job decides, from the files a PR touches
 
 - **auto**: Markdown other than agent instructions, `crates/*/tests/`,
   `Cargo.lock`, `rust-toolchain.toml`. Merges once CI and the Claude review pass.
-- **validate**: the analysis path (`dsp`, `tempo`, `key`, `pipeline`, `decode`,
-  and an `ALGORITHM_VERSION`-only edit to `lib.rs`). Also needs `metrognome
-  validate` on the PR not to lose, on any reference track, a tempo within
+- **validate**: the analysis path (`dsp`, `tempo`, `key`, `decode`, and an
+  `ALGORITHM_VERSION`-only edit to `lib.rs`), but not `pipeline`, which also
+  drives the cache that `validate` bypasses. Also needs `metrognome validate` on the PR not to lose, on any reference track, a tempo within
   tolerance, a tempo a consumer keeps, or an agreeing key, against its base in
   the same job. A row that errors on either side fails it: an inconclusive
   check is not a pass.

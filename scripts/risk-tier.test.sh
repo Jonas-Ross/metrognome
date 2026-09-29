@@ -53,6 +53,7 @@ sed -i.bak 's/= 10;/= 11;/' crates/metrognome/src/lib.rs && rm crates/metrognome
 { echo 'pub fn g() {}'; for _ in $(seq 20000); do echo '// padding past the pipe buffer'; done; } >> crates/metrognome/src/lib.rs
 expect jonas 'lib.rs edit hidden in a long diff'
 fresh_repo; echo x >> crates/metrognome/src/validate.rs; expect jonas 'the yardstick'
+fresh_repo; echo x > crates/metrognome/src/pipeline.rs; expect jonas 'pipeline drives the cache validate skips'
 fresh_repo; echo x >> crates/metrognome/src/dsp.rs; echo x >> .github/workflows/ci.yml; expect jonas 'dsp plus workflow'
 fresh_repo; echo x >> README.md; echo x >> crates/metrognome/src/types.rs; expect jonas 'docs plus contract'
 fresh_repo; echo x > CLAUDE.md; expect jonas 'agent rules'
