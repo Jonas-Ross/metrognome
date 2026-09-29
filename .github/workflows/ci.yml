@@ -41,3 +41,17 @@ jobs:
         # One optimized build runs the suite and the #[ignore]d accuracy
         # selftest, the gate for octave and metric errors in tempo.
         run: cargo test --workspace --profile ci -- --include-ignored
+
+  macos:
+    # Releases ship macOS binaries only, so a Mac-only build break must not
+    # wait for a tag to surface. Lint and the selftest gate stay on Linux.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test
+        run: cargo test --workspace --locked --profile ci
