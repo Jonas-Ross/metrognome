@@ -28,7 +28,9 @@ classify() {
   case $1 in
     # The gate itself and the rules agents follow: a change cannot grade its own
     # grader.
-    .github/* | scripts/* | CLAUDE.md | AGENTS.md | LICENSE) echo jonas ;;
+    .github/* | scripts/* | LICENSE) echo jonas ;;
+    # Agent instructions nest, so they are the gate's inputs at any depth.
+    CLAUDE.md | */CLAUDE.md | AGENTS.md | */AGENTS.md | .claude/* | */.claude/* | .codex/* | */.codex/*) echo jonas ;;
     # The yardsticks the validate tier is measured against.
     crates/metrognome/src/validate.rs | crates/metrognome/src/testsig.rs) echo jonas ;;
     # A manifest can add a dependency, which needs a stated reason.

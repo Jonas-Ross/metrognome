@@ -56,6 +56,8 @@ fresh_repo; echo x >> crates/metrognome/src/validate.rs; expect jonas 'the yards
 fresh_repo; echo x >> crates/metrognome/src/dsp.rs; echo x >> .github/workflows/ci.yml; expect jonas 'dsp plus workflow'
 fresh_repo; echo x >> README.md; echo x >> crates/metrognome/src/types.rs; expect jonas 'docs plus contract'
 fresh_repo; echo x > CLAUDE.md; expect jonas 'agent rules'
+fresh_repo; echo x > crates/metrognome/CLAUDE.md; expect jonas 'nested agent rules'
+fresh_repo; mkdir -p .claude/skills/x; echo x > .claude/skills/x/SKILL.md; expect jonas 'agent skill'
 fresh_repo; echo x > crates/metrognome/src/new_module.rs; expect jonas 'unlisted file'
 fresh_repo; git rm -q crates/metrognome/src/dsp.rs; expect validate 'deleted dsp file'
 fresh_repo; git mv README.md crates/metrognome/src/sneaky.rs; expect jonas 'rename out of an auto path'
