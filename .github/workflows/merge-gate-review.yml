@@ -17,17 +17,17 @@ jobs:
   rerun:
     if: github.event.review.user.login == 'Jonas-Ross'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          read -r run status < <(gh run list -R "$REPO" --workflow ci.yml --event pull_request --commit "$SHA" \
-            --json databaseId,status --jq '.[0] | "\(.databaseId) \(.status)"')
-          if [ "$status" != completed ]; then
-            echo "CI on $SHA is $status; its gate reads the review when it runs"
-            exit 0
-          fi
+          run=$(gh run list -R "$REPO" --workflow ci.yml --event pull_request --commit "$SHA" \
+            --json databaseId --jq '.[0].databaseId // empty')
+          [ -n "$run" ] || { echo "no CI run on $SHA yet; its gate reads the review when it runs"; exit 0; }
+          # A gate still running may have read the reviews before this one landed.
+          gh run watch "$run" -R "$REPO" > /dev/null || true
           job=$(gh run view "$run" -R "$REPO" --json jobs --jq '.jobs[] | select(.name == "merge-gate") | .databaseId')
           gh run rerun "$run" -R "$REPO" --job "$job"
