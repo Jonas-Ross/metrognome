@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  # Main only: PR branches run through `pull_request`, and a second push run
-  # per commit doubled every run.
+  # A branch with a PR would otherwise run twice per push.
   push:
     branches: [main]
   pull_request:
@@ -10,8 +9,9 @@ on:
 permissions:
   contents: read
 
+# A new PR push supersedes the last; every main commit keeps its own run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 defaults:
@@ -35,22 +35,23 @@ jobs:
         run: |
           scripts/risk-tier.test.sh
           scripts/validate-compare.test.sh
-          scripts/merge-gate.test.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Bumped when the build layout changes: an exact key hit never re-saves.
+          prefix-key: v1-rust
+          # PR branches restore main's cache; saving their own only evicts it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
-      - name: Accuracy selftest
-        # Synthesizes and analyzes ten 30-second clips, so it runs in release
-        # and is marked #[ignore] for the normal suite. It is the gate that
-        # catches an octave or metric regression in tempo estimation.
-        run: cargo test --workspace --release -- --ignored
+        # One optimized build runs the suite and the #[ignore]d accuracy
+        # selftest, the gate for octave and metric errors in tempo.
+        run: cargo test --workspace --profile ci -- --include-ignored
 
   # The jobs below decide whether a PR can merge without Jonas; DECISIONS.md 40.
   tier:
@@ -62,7 +63,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-      # The base's copy classifies the PR, as with the gate below.
+      # The base's copy classifies the PR, so an edit to the classifier can't
+      # classify itself; the PR's copy only runs while the base has none.
       - id: tier
         run: |
           git show HEAD^1:scripts/risk-tier.sh > "$RUNNER_TEMP/risk-tier.sh" ||
@@ -139,63 +141,39 @@ jobs:
           jq -r '"verdict: \(.verdict)\n\n\(.summary)\n", (.blocking[] | "- \(.)")' <<< "$OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "$(jq -r .verdict <<< "$OUTPUT")" = pass ]
 
-  # Posts the `merge-gate` commit status branch protection requires. Waiting on
-  # Jonas is `pending`, not a red job: a failed job emails him on every push.
+  # Turns auto-merge on when the tier passes and off when it does not, and never
+  # fails: waiting on Jonas is a label, not a red or pending check.
   gate:
     needs: [check, tier, validate, claude-review]
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       issues: write
       pull-requests: write
-      statuses: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - id: gate
-        env:
+      - env:
           GH_TOKEN: ${{ github.token }}
-          TIER: ${{ needs.tier.outputs.tier }}
-          CHECK_RESULT: ${{ needs.check.result }}
-          VALIDATE_RESULT: ${{ needs.validate.result }}
-          REVIEW_RESULT: ${{ needs.claude-review.result }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          APPROVER: Jonas-Ross
-        # The base's copy grades the PR, so an edit to the grader can't grade
-        # itself; the PR's copy only runs while the base has none.
-        run: |
-          git show "origin/$BASE_REF:scripts/merge-gate.sh" > "$RUNNER_TEMP/merge-gate.sh" ||
-            cp scripts/merge-gate.sh "$RUNNER_TEMP/merge-gate.sh"
-          bash "$RUNNER_TEMP/merge-gate.sh" >> "$GITHUB_OUTPUT"
-      - name: Status
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-          STATE: ${{ steps.gate.outputs.state }}
-          DESCRIPTION: ${{ steps.gate.outputs.description }}
-          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$STATE" -f context=merge-gate \
-            -f description="${DESCRIPTION:0:140}" -f target_url="$URL" > /dev/null
-      - name: Label
-        # Labels are for reading the PR list; the gate's result is what merges.
-        if: steps.gate.outputs.auto != ''
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          AUTO: ${{ steps.gate.outputs.auto }}
+          TIER: ${{ needs.tier.outputs.tier }}
+          RESULTS: ${{ needs.check.result }}:${{ needs.validate.result }}:${{ needs.claude-review.result }}
         run: |
-          gh label create auto-ok --color 0e8a16 --description 'Merges without Jonas once CI and review pass' --force
-          gh label create needs-jonas --color d93f0b --description 'Merges only with Jonas approval' --force
-          if [ "$AUTO" = true ]; then
+          case $TIER:$RESULTS in
+            auto:success:*:success | validate:success:success:success) auto=true ;;
+            *) auto=false ;;
+          esac
+          echo "tier $TIER, check:validate:review $RESULTS, merges without Jonas: $auto" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh label create auto-ok --color 0e8a16 --description 'Merges on its own once CI and review pass' --force
+          gh label create needs-jonas --color d93f0b --description 'Jonas merges this one' --force
+          # A failure here is a settings problem, so it warns instead of turning
+          # the job red.
+          if [ "$auto" = true ]; then
             gh pr edit "$PR" --add-label auto-ok --remove-label needs-jonas
+            gh pr merge "$PR" --auto --squash || echo "::warning::could not turn on auto-merge; is it allowed in the repository settings?"
           else
             gh pr edit "$PR" --add-label needs-jonas --remove-label auto-ok
+            if [ "$(gh pr view "$PR" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+              gh pr merge "$PR" --disable-auto || echo "::warning::could not turn off auto-merge"
+            fi
           fi

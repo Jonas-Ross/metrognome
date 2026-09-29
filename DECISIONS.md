@@ -1110,7 +1110,8 @@ So a `gate` job decides, from the files a PR touches
   `Cargo.lock`, `rust-toolchain.toml`. Merges once CI and the Claude review pass.
 - **validate**: the analysis path (`dsp`, `tempo`, `key`, `decode`, and an
   `ALGORITHM_VERSION`-only edit to `lib.rs`), but not `pipeline`, which also
-  drives the cache that `validate` bypasses. Also needs `metrognome validate` on the PR not to lose, on any reference track, a tempo within
+  drives the cache that `validate` bypasses. Also needs `metrognome validate`
+  on the PR not to lose, on any reference track, a tempo within
   tolerance, a tempo a consumer keeps, or an agreeing key, against its base in
   the same job. A row that errors on either side fails it: an inconclusive
   check is not a pass.
@@ -1125,8 +1126,8 @@ instructions at any depth (`CLAUDE.md`, `AGENTS.md`, `.claude/`), `validate.rs`
 and `testsig.rs` are the grader; a PR that could edit its grader and then pass
 it has graded itself. So "CI config merges on its own" from the
 original proposal does not hold for this repo: every CI change needs Jonas. The
-tier and gate scripts run from the base branch's copy, so a buggy edit to them
-cannot pass itself. The workflow still comes from the PR, so the gate stops a
+tier script runs from the base branch's copy, so a buggy edit to it cannot
+pass itself. The workflow still comes from the PR, so the gate stops a
 thread's honest mistake, not a deliberate one; the only authors with write
 access are Jonas and his agents, and a fork's PR gets no secrets, so no Claude
 review, so `jonas`.
@@ -1137,29 +1138,19 @@ diff with read-only tools and returns a structured `pass`/`block`. With no token
 configured it fails, which routes everything to Jonas instead of merging
 unreviewed. It is skipped on `jonas`-tier PRs, where Jonas is the reviewer.
 
-**An approval covers a change, not a commit.** Keeping a PR up to date with
-`main` means merging `main` in, which moves the head; requiring an approval on
-the exact head would ask Jonas to re-approve after every update. The gate
-merges the approved commit and the head each into `main` as it is now
-(`git merge-tree`) and requires the same tree, so merging `main` in keeps the
-approval, and any other edit, down to whitespace or which of two identical
-blocks changed, drops it. So does a conflict with `main`. Comparing diffs came
-first and was wrong both ways Codex found: `git patch-id` ignores whitespace,
-and a diff stripped of line numbers cannot tell identical blocks apart. A later
-changes-requested review from Jonas blocks every tier.
+**Nothing waits in a pending or red state for Jonas.** The gate job turns
+GitHub's native auto-merge (squash) on for a PR whose tier passed and off for one
+that did not, labels it `auto-ok` or `needs-jonas`, and always finishes green. A
+`needs-jonas` PR merges when Jonas merges it, or tells a thread to. The first
+design posted a required `merge-gate` commit status that sat `pending` until he
+approved, and it failed on two counts. Sessions watching CI waited on it
+forever. And threads open PRs as Jonas, so GitHub will not let him approve or
+request changes on them, which left the approval it waited for impossible to
+give. For the same reason `needs-jonas` is not enforced by a required review or
+CODEOWNERS: agents are told never to turn auto-merge on themselves, and the gate
+turns it back off on every push that lands a `jonas` tier. A red job means
+something actually broke (CI, `validate`, or a Claude review block), which is
+the only kind of failure email left.
 
-A fork's PR gets a read-only token, so its gate cannot post `merge-gate` at all;
-Jonas merges those by hand until outside contributions make a trusted
-`workflow_run` poster worth building.
-
-The merge itself is GitHub's native auto-merge (squash), enabled on each PR;
-`merge-gate` is a required commit status the gate job posts, so it fires only
-when the gate passes. Waiting on Jonas posts `pending`, not a failed job: a red
-job emails him on every push, which is noise for a state he already knows. A
-review from Jonas re-runs just the gate job (`merge-gate-review.yml`), so an
-approval merges without anyone re-running CI. That re-run needs a
-`MERGE_GATE_TOKEN` secret: `GITHUB_TOKEN` gets a 403 re-running a job. Without
-it the review stands but the gate has to be re-run by hand. A changes-requested
-review or a dismissed approval also turns auto-merge off at once, so a gate that
-already passed cannot merge past it; whoever addresses the review turns it back
-on.
+A fork's PR gets a read-only token, so its gate cannot turn auto-merge on; Jonas
+merges those by hand.
