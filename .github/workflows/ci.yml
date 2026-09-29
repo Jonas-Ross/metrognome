@@ -5,6 +5,13 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -18,6 +25,11 @@ jobs:
         # Cheapest gate first: the result cache is SQLite, and a database has
         # reached a repository once already.
         run: scripts/check-no-binaries.sh
+      - name: Gate scripts
+        run: |
+          scripts/risk-tier.test.sh
+          scripts/validate-compare.test.sh
+          scripts/merge-gate.test.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -33,3 +45,122 @@ jobs:
         # and is marked #[ignore] for the normal suite. It is the gate that
         # catches an octave or metric regression in tempo estimation.
         run: cargo test --workspace --release -- --ignored
+
+  # The jobs below decide whether a PR can merge without Jonas; DECISIONS.md 40.
+  tier:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: tier
+        run: echo "tier=$(scripts/risk-tier.sh HEAD^1 HEAD)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: tier
+    if: needs.tier.outputs.tier == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build base and head
+        # HEAD is the PR merged into its base, so HEAD^1 is exactly what it
+        # would land on.
+        run: |
+          git worktree add "$RUNNER_TEMP/base" HEAD^1
+          (cd "$RUNNER_TEMP/base" && cargo build --release -p metrognome-cli --target-dir "$GITHUB_WORKSPACE/target")
+          cp target/release/metrognome "$RUNNER_TEMP/metrognome-base"
+          cargo build --release -p metrognome-cli
+      - name: Validate
+        # Back to back, so both see the same store answers. `validate` exits 1
+        # on any tempo miss; the comparison is what gates.
+        run: |
+          "$RUNNER_TEMP/metrognome-base" validate > "$RUNNER_TEMP/base.json" || true
+          target/release/metrognome validate > "$RUNNER_TEMP/head.json" || true
+          scripts/validate-compare.sh "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  claude-review:
+    needs: tier
+    if: needs.tier.outputs.tier != 'jonas' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          # Threads open PRs as the Claude GitHub App.
+          allowed_bots: claude
+          prompt: |
+            You are the only reviewer of this pull request before it merges
+            unattended, so review adversarially. The change is `git diff HEAD^1 HEAD`;
+            read CLAUDE.md and the surrounding code for context.
+
+            Block on: a correctness bug, a broken hard rule from CLAUDE.md, a DSP
+            constant without its reason, a missed ALGORITHM_VERSION,
+            KEY_SCORER_VERSION or TEMPO_SOURCE bump, a test weakened or removed
+            without cause, or anything that changes the JSON contract. Style
+            preferences are not blocking. Pass when nothing blocking remains.
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"enum":["pass","block"]},"summary":{"type":"string"},"blocking":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking"]}'
+      - name: Verdict
+        env:
+          OUTPUT: ${{ steps.review.outputs.structured_output }}
+        run: |
+          jq -r '"verdict: \(.verdict)\n\n\(.summary)\n", (.blocking[] | "- \(.)")' <<< "$OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$(jq -r .verdict <<< "$OUTPUT")" = pass ]
+
+  merge-gate:
+    needs: [check, tier, validate, claude-review]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIER: ${{ needs.tier.outputs.tier }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          REVIEW_RESULT: ${{ needs.claude-review.result }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          APPROVER: Jonas-Ross
+        run: scripts/merge-gate.sh >> "$GITHUB_OUTPUT"
+      - name: Label
+        # Labels are for reading the PR list; the gate's result is what merges.
+        if: always() && steps.gate.outputs.auto != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh label create auto-ok --color 0e8a16 --description 'Merges without Jonas once CI and review pass' --force
+          gh label create needs-jonas --color d93f0b --description 'Merges only with Jonas approval' --force
+          if [ "${{ steps.gate.outputs.auto }}" = true ]; then
+            gh pr edit "$PR" --add-label auto-ok --remove-label needs-jonas
+          else
+            gh pr edit "$PR" --add-label needs-jonas --remove-label auto-ok
+          fi

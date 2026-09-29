@@ -1,0 +1,33 @@
+name: Merge gate on review
+
+# Jonas's review changes the gate's answer, so re-run the gate job of the
+# latest CI run on the PR's head instead of the whole suite.
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  actions: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rerun:
+    if: github.event.review.user.login == 'Jonas-Ross'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          read -r run status < <(gh run list -R "$REPO" --workflow ci.yml --event pull_request --commit "$SHA" \
+            --json databaseId,status --jq '.[0] | "\(.databaseId) \(.status)"')
+          if [ "$status" != completed ]; then
+            echo "CI on $SHA is $status; its gate reads the review when it runs"
+            exit 0
+          fi
+          job=$(gh run view "$run" -R "$REPO" --json jobs --jq '.jobs[] | select(.name == "merge-gate") | .databaseId')
+          gh run rerun "$run" -R "$REPO" --job "$job"

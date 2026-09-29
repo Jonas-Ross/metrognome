@@ -1098,3 +1098,51 @@ from an accident; it only makes forgetting the label impossible.
 
 Tempo gets the rule in `CLAUDE.md` but not the test yet: #15 was moving tempo
 output while this was written, so its pin is a follow-up.
+
+## 40. PRs merge by risk tier; the gate cannot be graded by the change it gates
+
+Jonas approving every PR made him the bottleneck, and most PRs here are docs,
+tests or DSP changes that `validate` measures better than a read-through does.
+So a `merge-gate` job decides, from the files a PR touches
+(`scripts/risk-tier.sh`), whether it can merge without him:
+
+- **auto**: Markdown other than `CLAUDE.md`, `crates/*/tests/`, `Cargo.lock`,
+  `rust-toolchain.toml`. Merges once CI and the Claude review pass.
+- **validate**: the analysis path (`dsp`, `tempo`, `key`, `pipeline`, `decode`,
+  and an `ALGORITHM_VERSION`-only edit to `lib.rs`). Also needs `metrognome
+  validate` on the PR not to lose, on any reference track, a tempo within
+  tolerance, a tempo a consumer keeps, or an agreeing key, against its base in
+  the same job. A row that errors on either side fails it: an inconclusive
+  check is not a pass.
+- **jonas**: everything else, including anything unlisted, so a new kind of file
+  fails closed. That covers the JSON contract, resolution and the rate limiter,
+  and the cache.
+
+Three rules keep the gate honest, and each of them costs something:
+
+**The gate's own inputs are `jonas`.** Workflows, `scripts/`, `CLAUDE.md`,
+`validate.rs` and `testsig.rs` are the grader; a PR that could edit its grader
+and then pass it has graded itself. So "CI config merges on its own" from the
+original proposal does not hold for this repo: every CI change needs Jonas. The
+gate still runs from the PR's own workflow, so it stops a thread's honest
+mistake, not a deliberate one; the only authors with write access are Jonas and
+his agents, and a fork's PR gets no secrets, so no Claude review, so `jonas`.
+
+**The Claude review is a separate reviewer, not the author's self-review.**
+Codex skips `claude[bot]` PRs, so `anthropics/claude-code-action` reviews the
+diff with read-only tools and returns a structured `pass`/`block`. With no token
+configured it fails, which routes everything to Jonas instead of merging
+unreviewed. It is skipped on `jonas`-tier PRs, where Jonas is the reviewer.
+
+**An approval covers a change, not a commit.** Keeping a PR up to date with
+`main` means merging `main` in, which moves the head; requiring an approval on
+the exact head would ask Jonas to re-approve after every update. The gate
+compares `git patch-id` of the PR's diff from its merge base at the approved
+commit and at the head, so merging `main` keeps the approval and any edit to the
+change itself, including a conflict resolution, drops it. A later
+changes-requested review from Jonas blocks every tier.
+
+The merge itself is GitHub's native auto-merge (squash), enabled on each PR;
+`merge-gate` is a required check, so it fires only when the gate passes. A
+review from Jonas re-runs just the gate job (`merge-gate-review.yml`), so an
+approval merges without anyone re-running CI.

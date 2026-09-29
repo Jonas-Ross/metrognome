@@ -78,6 +78,8 @@ Two crates, split so that analysis has no I/O assumptions baked in:
 | `cargo run -p metrognome-cli -- <args>` | Run the CLI in place |
 
 CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binaries.sh`.
+The `merge-gate` job then decides whether a PR needs Jonas, by the files it touches
+(`scripts/risk-tier.sh`, DECISIONS.md 40).
 
 ## Git workflow
 
@@ -85,6 +87,8 @@ CI gates on fmt, clippy with warnings denied, tests, and `scripts/check-no-binar
 - [Conventional Commits](https://www.conventionalcommits.org/):
   `<type>(<scope>): <subject>`, imperative, lowercase, no trailing period.
 - One concern per commit. Keep the build green.
+- Enable auto-merge (squash) on every PR you open; `merge-gate` holds it until the PR's
+  tier is satisfied. Don't route around a `needs-jonas` label by splitting a change.
 - Work that depends on an unmerged PR is stacked, not held: `gh stack` where the extension
   is installed (`gh stack submit --open` — bare `--auto` opens drafts), otherwise branch
   off that PR's head and open the follow-up against it by hand. Branches are named per the

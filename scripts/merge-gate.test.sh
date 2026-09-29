@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Tests for merge-gate.sh against a throwaway repository and a stubbed `gh`.
+set -euo pipefail
+
+gate=$(cd "$(dirname "$0")" && pwd)/merge-gate.sh
+root=$(mktemp -d)
+trap 'rm -rf "$root"' EXIT
+failures=0
+
+# `gh api ... --jq` stands in as whatever FAKE_REVIEWS holds.
+mkdir "$root/bin"
+# shellcheck disable=SC2016 # expanded by the stub, not here
+printf '#!/bin/sh\nprintf "%%s" "$FAKE_REVIEWS"\n' > "$root/bin/gh"
+chmod +x "$root/bin/gh"
+export PATH="$root/bin:$PATH" REPO=o/r PR_NUMBER=1 BASE_REF=main APPROVER=Jonas-Ross
+
+git init -q -b main "$root/upstream"
+cd "$root/upstream"
+git config user.email test@example.com && git config user.name test
+printf 'a\nb\nc\nd\ne\nf\n' > code && echo x > other && git add -A && git commit -qm base
+git clone -q "$root/upstream" "$root/pr"
+cd "$root/pr"
+git config user.email test@example.com && git config user.name test
+git checkout -qb pr
+sed -i.bak 's/^b$/B/' code && rm code.bak && git commit -qam change
+approved=$(git rev-parse HEAD)
+
+expect() {
+  local want=$1 name=$2 status=0 out
+  out=$(HEAD_SHA=$(git rev-parse HEAD) "$gate" 2> /dev/null) || status=$?
+  case $want:$status:$out in
+    auto:0:auto=true | approved:0:auto=false | blocked:1:auto=false) printf 'ok   %s\n' "$name" ;;
+    *)
+      printf 'FAIL %s: want %s, exit %d, printed %s\n' "$name" "$want" "$status" "$out"
+      failures=$((failures + 1))
+      ;;
+  esac
+}
+
+export CHECK_RESULT=success TIER=auto VALIDATE_RESULT=skipped REVIEW_RESULT=success FAKE_REVIEWS=
+expect auto 'auto tier, reviewed'
+CHECK_RESULT=failure expect blocked 'red CI'
+REVIEW_RESULT=failure expect blocked 'auto tier, review failed'
+FAKE_REVIEWS="CHANGES_REQUESTED $approved" expect blocked 'auto tier, Jonas requested changes'
+FAKE_REVIEWS="$(printf 'CHANGES_REQUESTED %s\nAPPROVED %s' "$approved" "$approved")" expect auto 'latest review wins'
+
+TIER=validate VALIDATE_RESULT=success expect auto 'validate tier, no regression'
+TIER=validate VALIDATE_RESULT=failure expect blocked 'validate tier, regressed'
+TIER=validate VALIDATE_RESULT=failure FAKE_REVIEWS="APPROVED $approved" expect approved 'regression Jonas accepted'
+
+export TIER=jonas REVIEW_RESULT=skipped
+expect blocked 'jonas tier, unapproved'
+FAKE_REVIEWS="APPROVED $approved" expect approved 'jonas tier, approved at head'
+FAKE_REVIEWS="DISMISSED $approved" expect blocked 'approval dismissed'
+FAKE_REVIEWS="APPROVED 0123456789abcdef0123456789abcdef01234567" expect blocked 'approved commit gone'
+
+# main moves on and is merged in: the approved change is the same change.
+(cd "$root/upstream" && echo y > other && git commit -qam 'main moves')
+git fetch -q origin && git merge -q --no-edit origin/main
+FAKE_REVIEWS="APPROVED $approved" expect approved 'approval survives merging main'
+
+sed -i.bak 's/^e$/E/' code && rm code.bak && git commit -qam 'more change'
+FAKE_REVIEWS="APPROVED $approved" expect blocked 'approval does not cover a later edit'
+
+[ "$failures" -eq 0 ] || { printf '%d failed\n' "$failures"; exit 1; }
