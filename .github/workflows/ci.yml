@@ -54,7 +54,7 @@ jobs:
         # selftest, the gate for octave and metric errors in tempo.
         run: cargo test --workspace --profile ci -- --include-ignored
       - name: WebAssembly
-        # The site's engine; fails if the DSP picks up an I/O dependency.
+        # Selecta's website runs this; fails if the DSP picks up an I/O dependency.
         run: cargo build -p metrognome-wasm --target wasm32-unknown-unknown
 
   # The jobs below decide whether a PR can merge without Jonas; DECISIONS.md 40.

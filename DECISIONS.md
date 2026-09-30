@@ -1157,7 +1157,7 @@ merges those by hand.
 
 ## 41. The browser demo runs the real DSP as WebAssembly, behind a raw ABI
 
-The marketing site's centrepiece is metrognome itself: a visitor drops a song
+Selecta's website has metrognome itself as its demo: a visitor drops a song
 and gets tempo and key computed in their own tab. A JavaScript port would drift
 from the estimator the moment either changed, so the page runs this crate.
 
@@ -1173,24 +1173,26 @@ the DSP fails the build instead of the site.
 (allocate, analyze, read result, free) and returns the same `Features` JSON the
 CLI emits, plus a normalized chroma for the page to draw. That keeps the build
 to one `cargo build --target wasm32-unknown-unknown` with no CLI tool to pin,
-at the cost of ~20 lines of pointer handling in `site/worker.js`. rayon compiles
-unchanged and runs `join` on the calling thread when there are no threads.
+at the cost of ~20 lines of pointer handling in the page's worker. rayon
+compiles unchanged and runs `join` on the calling thread when there are no
+threads.
 
 **The browser decodes, not symphonia.** `decodeAudioData` already handles every
 format the browser plays and resamples to 44.1 kHz on the way. The engine sees
 mono PCM and a sample rate, exactly as from a preview.
 
-**Windows of 30 seconds.** Tempo was validated on preview clips, and analysis
-time grows faster than linearly with length (a 120 s clip takes about ten
-times a 30 s one), so the headline result reads the middle 30 seconds, like a
-preview would, and the rest of the track is read window by window. The
-per-window results are shown next to each other and never merged into a
-confidence of their own: agreement across windows is not something the
-estimator measured.
+**Thirty seconds from the middle.** Tempo was validated on preview clips, and
+analysis time grows faster than linearly with length (a 120 s clip takes about
+ten times a 30 s one), so the page reads the middle 30 seconds of a longer
+track, like a preview would.
 
-**Key stays provisional on the page.** The key card carries the maturity badge,
-the confidence broken into its four factors, and a strike-through with a hint
-banner at or below the uncertainty threshold, same as the contract.
+**Key stays provisional on the page.** Each reading shows its confidence and
+maturity, and at or below the uncertainty threshold the page calls it a guess
+that Selecta would not keep, same as the contract. The page's metronome locks
+to the kick rather than `beat_offset_secs`, which can land on an offbeat hi-hat
+and is not validated.
 
-The site lives in `site/` in this repo rather than its own: the wasm has to be
-built from this crate at the same commit, and Pages deploys it from here.
+**The site lives in Selecta's repo.** It is Selecta's front page, so it sits
+with Selecta and builds this crate from a commit pinned in its Pages workflow.
+That makes the four exports and their JSON an interface across repos, like the
+CLI's: a change to them reaches the page only when Selecta bumps the pin.

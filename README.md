@@ -10,9 +10,9 @@ after 2022. Preview clips are plain unencrypted AAC, so they can be analyzed.
 
 ## Try it in a browser
 
-`site/` is the Selecta site, and its demo is this crate compiled to
-WebAssembly: drop in a song and it reports tempo and key without the audio
-leaving the tab. `site/build.sh` builds it; any static file server runs it.
+[Selecta's website](https://github.com/Jonas-Ross/selecta/tree/main/site) runs
+this crate compiled to WebAssembly: drop in a song and it reports tempo and key
+without the audio leaving the tab. `crates/metrognome-wasm` is that build.
 
 ## Interface
 
