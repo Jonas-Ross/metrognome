@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::{analyze_pcm_with, AnalysisOptions};
+use crate::analyze::{analyze_pcm_with, AnalysisOptions};
 use crate::testsig::{self, Groove, Quality};
 use crate::types::{
     Alternate, AudioInfo, Features, KeyScoring, TempoConfidenceFactors, TrackMatch,

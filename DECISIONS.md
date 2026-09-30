@@ -1189,3 +1189,44 @@ packages, runs `selftest` on the packaged binary and syntax-checks the
 rendered formula, so a broken release shows up in review rather than on the
 tag. A separate macOS CI job runs the test suite on every PR, because
 nothing else here builds for the platform that ships.
+
+## 42. The browser demo runs the real DSP as WebAssembly, behind a raw ABI
+
+Selecta's website has metrognome itself as its demo: a visitor drops a song
+and gets tempo and key computed in their own tab. A JavaScript port would drift
+from the estimator the moment either changed, so the page runs this crate.
+
+**The I/O moved behind a default `net` feature.** `cache`, `fetch`, `resolve`,
+`ratelimit` and `Analyzer` need tokio, reqwest and rusqlite, none of which
+build for `wasm32-unknown-unknown`. With the feature off, the crate is the
+DSP alone, which is the layering `CLAUDE.md` already asked for. The pure entry
+points moved from `pipeline` to a new `analyze` module; the re-exports at the
+crate root are unchanged. CI builds the wasm crate so a stray I/O import into
+the DSP fails the build instead of the site.
+
+**No wasm-bindgen.** `metrognome-wasm` exports four `extern "C"` functions
+(allocate, analyze, read result, free) and returns the same `Features` JSON the
+CLI emits. That keeps the build to one
+`cargo build --target wasm32-unknown-unknown` with no CLI tool to pin, at the
+cost of ~20 lines of pointer handling in the page's worker. rayon compiles
+unchanged and runs `join` on the calling thread when there are no threads.
+
+**The browser decodes, not symphonia.** `decodeAudioData` already handles every
+format the browser plays and resamples to 44.1 kHz on the way. The engine sees
+mono PCM and a sample rate, exactly as from a preview.
+
+**Thirty seconds from the middle.** Tempo was validated on preview clips, and
+analysis time grows faster than linearly with length (a 120 s clip takes about
+ten times a 30 s one), so the page reads the middle 30 seconds of a longer
+track, like a preview would.
+
+**Key stays provisional on the page.** Each reading shows its confidence and
+maturity, and at or below the uncertainty threshold the page calls it a guess
+that Selecta would not keep, same as the contract. The page's metronome locks
+to the kick rather than `beat_offset_secs`, which can land on an offbeat hi-hat
+and is not validated.
+
+**The site lives in Selecta's repo.** It is Selecta's front page, so it sits
+with Selecta and builds this crate from a commit pinned in its Pages workflow.
+That makes the four exports and their JSON an interface across repos, like the
+CLI's: a change to them reaches the page only when Selecta bumps the pin.

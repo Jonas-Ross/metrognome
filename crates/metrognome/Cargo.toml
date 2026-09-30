@@ -6,17 +6,27 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["net"]
+# The iTunes preview path: resolution, fetching, rate limiting and the result
+# cache. Off, the crate is pure DSP and builds for wasm32.
+net = ["dep:tokio", "dep:reqwest", "dep:rusqlite"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 rustfft = "6"
 rayon = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"], optional = true }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 symphonia = { version = "0.5", default-features = false, features = ["aac", "isomp4", "mp3", "wav", "pcm"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[[test]]
+name = "end_to_end"
+required-features = ["net"]
