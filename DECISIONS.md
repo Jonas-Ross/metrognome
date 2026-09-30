@@ -1171,11 +1171,10 @@ the DSP fails the build instead of the site.
 
 **No wasm-bindgen.** `metrognome-wasm` exports four `extern "C"` functions
 (allocate, analyze, read result, free) and returns the same `Features` JSON the
-CLI emits, plus a normalized chroma for the page to draw. That keeps the build
-to one `cargo build --target wasm32-unknown-unknown` with no CLI tool to pin,
-at the cost of ~20 lines of pointer handling in the page's worker. rayon
-compiles unchanged and runs `join` on the calling thread when there are no
-threads.
+CLI emits. That keeps the build to one
+`cargo build --target wasm32-unknown-unknown` with no CLI tool to pin, at the
+cost of ~20 lines of pointer handling in the page's worker. rayon compiles
+unchanged and runs `join` on the calling thread when there are no threads.
 
 **The browser decodes, not symphonia.** `decodeAudioData` already handles every
 format the browser plays and resamples to 44.1 kHz on the way. The engine sees

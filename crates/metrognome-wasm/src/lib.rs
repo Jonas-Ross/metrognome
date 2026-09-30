@@ -11,8 +11,6 @@
 
 use std::cell::RefCell;
 
-use metrognome::dsp::Stft;
-use metrognome::key::chromagram;
 use metrognome::{analyze_pcm_with, AnalysisOptions, Features, KeyProfile, ALGORITHM_VERSION};
 use serde::Serialize;
 
@@ -23,32 +21,17 @@ pub struct Report {
     pub algorithm_version: u32,
     /// The same features the CLI emits under `features`.
     pub features: Features,
-    /// Energy per pitch class, C first, scaled so the loudest is 1.
-    pub chroma: [f32; 12],
 }
 
 /// Analyze mono PCM. `profile` is a name [`KeyProfile::parse`] accepts.
 pub fn analyze(samples: &[f32], sample_rate: u32, profile: KeyProfile) -> Report {
     let options = AnalysisOptions {
         key_profile: profile,
-        explain_key_scoring: true,
-    };
-    let features = analyze_pcm_with(samples, sample_rate, &options);
-    // A second chroma STFT only to draw the pitch-class fingerprint; the
-    // estimate itself never sees this copy.
-    let chroma = chromagram(&Stft::for_chroma(sample_rate).magnitudes(samples, sample_rate));
-    let peak = chroma.bins.iter().cloned().fold(0.0f32, f32::max);
-    let scale = if peak > 0.0 && peak.is_finite() {
-        1.0 / peak
-    } else {
-        0.0
+        explain_key_scoring: false,
     };
     Report {
         algorithm_version: ALGORITHM_VERSION,
-        features,
-        chroma: chroma
-            .bins
-            .map(|v| if v.is_finite() { v * scale } else { 0.0 }),
+        features: analyze_pcm_with(samples, sample_rate, &options),
     }
 }
 
@@ -113,7 +96,7 @@ mod tests {
     use metrognome::testsig::{self, Groove, Quality};
 
     #[test]
-    fn a_report_carries_tempo_key_and_a_normalized_chroma() {
+    fn a_report_carries_tempo_and_key() {
         let sr = 44_100;
         let mut sig = testsig::groove(124.0, 20.0, sr, Groove::FourOnFloor);
         testsig::mix_at(
@@ -124,14 +107,7 @@ mod tests {
 
         let report = analyze(&sig, sr, KeyProfile::Edm);
         assert!((report.features.tempo.as_ref().expect("tempo").bpm - 124.0).abs() < 1.0);
-        let key = report.features.key.as_ref().expect("key");
-        assert_eq!(key.camelot, "4A");
-        assert!(
-            key.scoring.is_some(),
-            "the page explains confidence from this"
-        );
-        let peak = report.chroma.iter().cloned().fold(0.0f32, f32::max);
-        assert!((peak - 1.0).abs() < 1e-6, "{:?}", report.chroma);
+        assert_eq!(report.features.key.as_ref().expect("key").camelot, "4A");
     }
 
     #[test]
@@ -150,10 +126,9 @@ mod tests {
     }
 
     #[test]
-    fn silence_yields_no_confident_feature_and_a_zero_chroma() {
+    fn silence_yields_no_confident_feature() {
         let report = analyze(&vec![0.0; 44_100 * 5], 44_100, KeyProfile::Edm);
         assert!(report.features.tempo.as_ref().is_none_or(|t| t.uncertain));
         assert!(report.features.key.as_ref().is_none_or(|k| k.uncertain));
-        assert!(report.chroma.iter().all(|v| *v == 0.0));
     }
 }
