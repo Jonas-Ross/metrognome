@@ -53,6 +53,20 @@ jobs:
         # selftest, the gate for octave and metric errors in tempo.
         run: cargo test --workspace --profile ci -- --include-ignored
 
+  macos:
+    # Releases ship macOS binaries only, so a Mac-only build break must not
+    # wait for a tag to surface. Lint and the selftest gate stay on Linux.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test
+        run: cargo test --workspace --locked --profile ci
+
   # The jobs below decide whether a PR can merge without Jonas; DECISIONS.md 40.
   tier:
     if: github.event_name == 'pull_request'
@@ -144,7 +158,7 @@ jobs:
   # Turns auto-merge on when the tier passes and off when it does not, and never
   # fails: waiting on Jonas is a label, not a red or pending check.
   gate:
-    needs: [check, tier, validate, claude-review]
+    needs: [check, macos, tier, validate, claude-review]
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
@@ -157,7 +171,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           TIER: ${{ needs.tier.outputs.tier }}
-          RESULTS: ${{ needs.check.result }}:${{ needs.validate.result }}:${{ needs.claude-review.result }}
+          RESULTS: ${{ needs.check.result == 'success' && needs.macos.result == 'success' && 'success' || 'failure' }}:${{ needs.validate.result }}:${{ needs.claude-review.result }}
         run: |
           case $TIER:$RESULTS in
             auto:success:*:success | validate:success:success:success) auto=true ;;

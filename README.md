@@ -98,6 +98,21 @@ a result gets matched back to a row.
 
 ## Install
 
+On macOS (Apple Silicon or Intel), from the first tagged release on:
+
+```
+brew install jonas-ross/tap/metrognome
+metrognome --version
+```
+
+Or download the universal tarball from
+[Releases](https://github.com/Jonas-Ross/metrognome/releases), check it against
+its `.sha256`, and put `metrognome` on your `PATH`. A browser download is
+quarantined because the binary is only ad-hoc signed; clear that with
+`xattr -d com.apple.quarantine metrognome`.
+
+From source, on any platform Rust supports:
+
 ```
 cargo build --release
 ./target/release/metrognome --help
