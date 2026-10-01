@@ -1260,17 +1260,16 @@ The band is scaled to the clip's loudest frame across all bands, not its own,
 and its sharpest rise must reach 1.5% of that frame or the comb's phase stands.
 Without the floor, a quiet bassline under high-passed drums anchors the beat
 on itself. The quietest real kick measured rises 0.026 (FISHER); Born Slippy, at
-0.009, falls back and keeps the same phase either way. This floor landed just after
-the rest of the entry merged, so it bumps `ALGORITHM_VERSION` to 12 and
-`TEMPO_SOURCE` to `@5` again: a kickless clip's offset can move.
+0.009, falls back and keeps the same phase either way.
 
 Results: Sandstorm moves to 0.01, `OffbeatTrance` to 0.01, and the other
 fourteen previews keep their phase to within a millisecond. Phases are
 identical with the share anywhere from 0.3 to 1.0. BPM and confidence are
 unchanged on all fifteen, since the comb's scoring is untouched.
 
-`ALGORITHM_VERSION` 10 to 11 and `TEMPO_SOURCE` to `@4`, because the offset is
-part of the tempo estimate and its label must name what produced it. No BPM or
-confidence changes, so a selecta re-measure under the new label returns the
-same tempos. The site's kick-locked metronome (entry 42) is
+Shipped in two steps. The kick anchor took `ALGORITHM_VERSION` 10 to 11 and
+`TEMPO_SOURCE` to `@4`; the floor landed just after it merged and took them to
+12 and `@5`, since a kickless clip's offset can move. The offset is part of the
+tempo estimate, so its label must name what produced it. No BPM or confidence
+changes, so a selecta re-measure under the new label returns the same tempos. The site's kick-locked metronome (entry 42) is
 no longer needed once Selecta bumps its pin, though it does no harm.
