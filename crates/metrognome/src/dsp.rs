@@ -76,6 +76,10 @@ const WHITEN_MEMORY_SECS: f32 = 3.0;
 /// would turn hiss into onsets.
 const WHITEN_FLOOR_REL: f32 = 0.01;
 
+/// Top of the kick band, in Hz. A kick's body sits at 40-100 Hz, below the hats
+/// and claps that share the offbeats.
+const KICK_BAND_HZ: f32 = 120.0;
+
 /// Window, in seconds, of the moving average subtracted from the raw flux.
 ///
 /// A high-pass at ~0.67 Hz: removes build-ups and filter sweeps that otherwise
@@ -212,18 +216,19 @@ fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10f32.powf(mel / 2595.0) - 1.0)
 }
 
+/// The `i`th of the filterbank's `N_MELS + 2` evenly mel-spaced edges, in Hz.
+fn mel_edge_hz(spec: &Spectrogram, i: usize) -> f32 {
+    let fmax = MEL_FMAX.min(spec.sample_rate as f32 / 2.0);
+    let (lo, hi) = (hz_to_mel(MEL_FMIN), hz_to_mel(fmax));
+    mel_to_hz(lo + (hi - lo) * i as f32 / (N_MELS + 1) as f32)
+}
+
 /// Triangular mel filterbank as (start_bin, weights) pairs.
 ///
 /// Sparse rather than a dense matrix: each filter touches a handful of bins,
 /// and the dense form would be 64 x 1025 floats of mostly zeros per call.
 fn mel_filterbank(spec: &Spectrogram) -> Vec<(usize, Vec<f32>)> {
-    let nyquist = spec.sample_rate as f32 / 2.0;
-    let fmax = MEL_FMAX.min(nyquist);
-    let mel_lo = hz_to_mel(MEL_FMIN);
-    let mel_hi = hz_to_mel(fmax);
-    let edges: Vec<f32> = (0..N_MELS + 2)
-        .map(|i| mel_to_hz(mel_lo + (mel_hi - mel_lo) * i as f32 / (N_MELS + 1) as f32))
-        .collect();
+    let edges: Vec<f32> = (0..N_MELS + 2).map(|i| mel_edge_hz(spec, i)).collect();
 
     let bin_hz = spec.sample_rate as f32 / spec.n_fft as f32;
     let mut out = Vec::with_capacity(N_MELS);
@@ -255,6 +260,10 @@ fn mel_filterbank(spec: &Spectrogram) -> Vec<(usize, Vec<f32>)> {
 pub struct OnsetEnvelope {
     /// Detrended, zero-mean, unit-variance onset strength, one value per frame.
     pub values: Vec<f32>,
+    /// Energy in the mel bands under [`KICK_BAND_HZ`], one value per frame,
+    /// as a share of the clip's loudest frame. Linear and unwhitened, so a
+    /// kick outweighs a bassline swelling back in after it.
+    pub kick: Vec<f32>,
     /// Frame rate in Hz.
     pub fps: f32,
     /// Seconds to add to a frame time to reach the event that caused it. Flux
@@ -275,6 +284,7 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     if spec.frames < 2 {
         return OnsetEnvelope {
             values: Vec::new(),
+            kick: Vec::new(),
             fps: spec.fps,
             latency_secs: 0.0,
             pulse_strength: 0.0,
@@ -296,6 +306,7 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
             mel[t * N_MELS + m] = acc;
         }
     }
+    let kick = kick_energy(&mel, spec);
     whiten(&mut mel, spec.fps);
     for v in mel.iter_mut() {
         *v = (1.0 + LOG_COMPRESSION_GAMMA * *v).ln();
@@ -338,10 +349,30 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     let hop = spec.sample_rate as f32 / spec.fps;
     OnsetEnvelope {
         values,
+        kick,
         fps: spec.fps,
         latency_secs: (spec.n_fft as f32 - hop) / spec.sample_rate as f32,
         pulse_strength,
     }
+}
+
+/// Per-frame energy of the mel bands centred under [`KICK_BAND_HZ`], scaled so
+/// the loudest frame is 1.
+fn kick_energy(mel: &[f32], spec: &Spectrogram) -> Vec<f32> {
+    let bands = (0..N_MELS)
+        .take_while(|&m| mel_edge_hz(spec, m + 1) < KICK_BAND_HZ)
+        .count();
+    let energy: Vec<f32> = mel
+        .as_chunks::<N_MELS>()
+        .0
+        .iter()
+        .map(|frame| frame[..bands].iter().map(|v| v * v).sum())
+        .collect();
+    let peak = energy.iter().fold(0.0f32, |a, &v| a.max(v));
+    if peak <= 0.0 {
+        return vec![0.0; energy.len()];
+    }
+    energy.iter().map(|v| v / peak).collect()
 }
 
 /// Divide each mel band by a decaying follower of its own peak, in place.
@@ -554,6 +585,33 @@ mod tests {
         assert!((last[0] - 1.0).abs() < 1e-6, "{}", last[0]);
         assert!((last[1] - 1.0).abs() < 1e-6, "{}", last[1]);
         assert!(last[2] < 0.2, "{}", last[2]);
+    }
+
+    #[test]
+    fn kick_band_hears_the_kick_and_not_the_hat() {
+        let sr = 44_100;
+        let mut noise = testsig::Noise::new(3);
+        let mut sig = vec![0.0f32; sr as usize * 2];
+        testsig::mix_at(
+            &mut sig,
+            &testsig::kick_hit(55.0, 0.18, sr, 0.5, &mut noise),
+            sr as usize / 2,
+        );
+        testsig::mix_at(
+            &mut sig,
+            &testsig::noise_burst(0.12, sr, 0.9, &mut noise),
+            sr as usize * 3 / 2,
+        );
+        let stft = Stft::for_onsets(sr);
+        let env = onset_envelope(&stft.magnitudes(&sig, sr));
+        let frame = |secs: f32| (secs * env.fps) as usize;
+        let peak = |from: f32| {
+            env.kick[frame(from)..frame(from + 0.2)]
+                .iter()
+                .fold(0.0f32, |a, &v| a.max(v))
+        };
+        assert!((peak(0.45) - 1.0).abs() < 1e-6, "kick {}", peak(0.45));
+        assert!(peak(1.45) < 0.05, "hat {}", peak(1.45));
     }
 
     #[test]
