@@ -14,7 +14,7 @@ use crate::decode::decode_bytes;
 use crate::error::{Error, Result};
 use crate::fetch;
 use crate::ratelimit::{RateLimiter, DEFAULT_BURST, DEFAULT_PER_MINUTE};
-use crate::resolve::Resolver;
+use crate::resolve::{Country, Resolver};
 use crate::types::{Analysis, AudioInfo, Features, Query, TrackMatch};
 
 /// How the analyzer talks to the outside world.
@@ -28,6 +28,8 @@ pub struct AnalyzerConfig {
     pub analysis: AnalysisOptions,
     /// Where to keep the result cache. `None` disables caching entirely.
     pub cache_path: Option<PathBuf>,
+    /// iTunes storefront to resolve in. `None` is Apple's default, the US.
+    pub country: Option<Country>,
 }
 
 impl Default for AnalyzerConfig {
@@ -37,6 +39,7 @@ impl Default for AnalyzerConfig {
             burst: DEFAULT_BURST,
             analysis: AnalysisOptions::default(),
             cache_path: crate::cache::default_path().ok(),
+            country: None,
         }
     }
 }
@@ -45,6 +48,7 @@ impl Default for AnalyzerConfig {
 pub struct Analyzer {
     client: reqwest::Client,
     resolver: Resolver,
+    country: Option<Country>,
     analysis: AnalysisOptions,
     // SQLite calls here are microseconds and never span an await, so a plain
     // mutex is the right tool; an async one would only add ceremony.
@@ -58,7 +62,8 @@ impl Analyzer {
         let resolver = Resolver::new(
             client.clone(),
             RateLimiter::new(config.requests_per_minute, config.burst),
-        );
+        )
+        .with_country(config.country.clone());
         let cache = match &config.cache_path {
             Some(path) => Some(Mutex::new(Cache::open(path)?)),
             None => None,
@@ -66,6 +71,7 @@ impl Analyzer {
         Ok(Analyzer {
             client,
             resolver,
+            country: config.country.clone(),
             analysis: config.analysis,
             cache,
         })
@@ -114,29 +120,8 @@ impl Analyzer {
         }
     }
 
-    /// Key under which a query's *resolution* is cached.
-    ///
-    /// Normalized so that casing and spacing differences between a library's
-    /// metadata and a previous run do not miss.
-    fn resolution_key(query: &Query) -> Option<String> {
-        // A track ID identifies rather than describes, so matching never comes
-        // into it and the key needs no matcher version.
-        if let Some(id) = query.track_id {
-            return Some(format!("id:{id}"));
-        }
-        let artist = query.artist.as_deref()?.trim().to_lowercase();
-        let title = query.title.as_deref()?.trim().to_lowercase();
-        if title.is_empty() {
-            return None;
-        }
-        // Unit separator: cannot appear in metadata, so "a b"+"c" and "a"+"b c"
-        // cannot collide.
-        let v = crate::resolve::MATCHER_VERSION;
-        Some(format!("q{v}:{artist}\u{1}{title}"))
-    }
-
     async fn resolve(&self, query: &Query) -> Result<TrackMatch> {
-        let key = Self::resolution_key(query);
+        let key = resolution_key(query, self.country.as_ref());
         if let Some(hit) = key.as_deref().and_then(|k| self.cached_resolution(k)) {
             return Ok(hit);
         }
@@ -220,6 +205,33 @@ impl Analyzer {
     }
 }
 
+/// Key under which a query's *resolution* is cached.
+///
+/// Normalized so that casing and spacing differences between a library's
+/// metadata and a previous run do not miss.
+fn resolution_key(query: &Query, country: Option<&Country>) -> Option<String> {
+    // The same query can resolve differently, or only, in another store. The
+    // default store carries no suffix so caches from before `--country` stay warm.
+    let store = match country {
+        Some(c) if !c.is_default() => format!("@{}", c.code()),
+        _ => String::new(),
+    };
+    // A track ID identifies rather than describes, so matching never comes
+    // into it and the key needs no matcher version.
+    if let Some(id) = query.track_id {
+        return Some(format!("id{store}:{id}"));
+    }
+    let artist = query.artist.as_deref()?.trim().to_lowercase();
+    let title = query.title.as_deref()?.trim().to_lowercase();
+    if title.is_empty() {
+        return None;
+    }
+    // Unit separator: cannot appear in metadata, so "a b"+"c" and "a"+"b c"
+    // cannot collide.
+    let v = crate::resolve::MATCHER_VERSION;
+    Some(format!("q{v}{store}:{artist}\u{1}{title}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,14 +255,40 @@ mod tests {
             title: Some("AROUND THE WORLD  ".into()),
             ..Default::default()
         };
-        assert_eq!(Analyzer::resolution_key(&a), Analyzer::resolution_key(&b));
+        assert_eq!(resolution_key(&a, None), resolution_key(&b, None));
         // An ID is its own key and never collides with a text query.
         let c = Query {
             track_id: Some(5),
             ..Default::default()
         };
-        assert_eq!(Analyzer::resolution_key(&c).unwrap(), "id:5");
-        assert!(Analyzer::resolution_key(&Query::default()).is_none());
+        assert_eq!(resolution_key(&c, None).unwrap(), "id:5");
+        assert!(resolution_key(&Query::default(), None).is_none());
+    }
+
+    #[test]
+    fn resolution_keys_separate_stores_but_not_the_default_one() {
+        let q = Query {
+            artist: Some("Kaizers Orchestra".into()),
+            title: Some("Ompa til du dør".into()),
+            ..Default::default()
+        };
+        let id = Query {
+            track_id: Some(5),
+            ..Default::default()
+        };
+        let us = Country::parse("us");
+        let no = Country::parse("no");
+        for query in [&q, &id] {
+            assert_eq!(
+                resolution_key(query, us.as_ref()),
+                resolution_key(query, None)
+            );
+            assert_ne!(
+                resolution_key(query, no.as_ref()),
+                resolution_key(query, None)
+            );
+        }
+        assert_eq!(resolution_key(&id, no.as_ref()).unwrap(), "id@no:5");
     }
 
     #[tokio::test]

@@ -334,11 +334,39 @@ fn to_match(c: &ItunesTrack, score: f32) -> TrackMatch {
     }
 }
 
+/// An iTunes storefront, as the lowercase ISO 3166-1 alpha-2 code the Search
+/// and Lookup APIs take in `country`.
+///
+/// Apple answers from the US store when none is given, and a track missing
+/// there comes back as no match even though the caller's own store sells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Country(String);
+
+impl Country {
+    /// Parse a two-letter country code, in either case.
+    pub fn parse(s: &str) -> Option<Country> {
+        let s = s.trim();
+        (s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic()))
+            .then(|| Country(s.to_ascii_lowercase()))
+    }
+
+    /// The lowercase code.
+    pub fn code(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether this is the store Apple answers from when none is given.
+    pub fn is_default(&self) -> bool {
+        self.0 == "us"
+    }
+}
+
 /// Client for the iTunes Search and Lookup endpoints.
 pub struct Resolver {
     client: reqwest::Client,
     limiter: RateLimiter,
     base_url: String,
+    country: Option<Country>,
 }
 
 impl Resolver {
@@ -348,7 +376,14 @@ impl Resolver {
             client,
             limiter,
             base_url: "https://itunes.apple.com".into(),
+            country: None,
         }
+    }
+
+    /// Search and look up in this storefront instead of Apple's default.
+    pub fn with_country(mut self, country: Option<Country>) -> Self {
+        self.country = country;
+        self
     }
 
     /// Point the resolver at a different origin (used by integration tests).
@@ -375,7 +410,7 @@ impl Resolver {
 
     /// Resolve by store track ID.
     pub async fn lookup(&self, track_id: i64) -> Result<TrackMatch> {
-        let url = format!("{}/lookup?id={track_id}&entity=song", self.base_url);
+        let url = self.lookup_url(track_id);
         let results = parse_response(&self.get(&url).await?)?;
         // Not NoPreview: that says the track exists and can never be analyzed,
         // which a consumer may record and never retry. A missing row means the
@@ -393,16 +428,36 @@ impl Resolver {
 
     /// Resolve by artist and title.
     pub async fn search(&self, artist: &str, title: &str) -> Result<TrackMatch> {
-        let term = urlencode(&format!("{artist} {title}"));
-        let url = format!(
-            "{}/search?term={term}&media=music&entity=song&limit={SEARCH_LIMIT}",
-            self.base_url
-        );
+        let url = self.search_url(artist, title);
         let results = parse_response(&self.get(&url).await?)?;
         pick_best(artist, title, &results).ok_or_else(|| Error::NoMatch {
             artist: artist.to_string(),
             title: title.to_string(),
         })
+    }
+
+    fn lookup_url(&self, track_id: i64) -> String {
+        format!(
+            "{}/lookup?id={track_id}&entity=song{}",
+            self.base_url,
+            self.country_param()
+        )
+    }
+
+    fn search_url(&self, artist: &str, title: &str) -> String {
+        let term = urlencode(&format!("{artist} {title}"));
+        format!(
+            "{}/search?term={term}&media=music&entity=song&limit={SEARCH_LIMIT}{}",
+            self.base_url,
+            self.country_param()
+        )
+    }
+
+    fn country_param(&self) -> String {
+        self.country
+            .as_ref()
+            .map(|c| format!("&country={}", c.code()))
+            .unwrap_or_default()
     }
 }
 
@@ -614,6 +669,30 @@ mod tests {
     fn malformed_json_is_an_error_not_a_panic() {
         assert!(parse_response("not json at all").is_err());
         assert!(parse_response("{}").unwrap().is_empty());
+    }
+
+    #[test]
+    fn country_codes_are_two_letters_in_either_case() {
+        assert_eq!(Country::parse("NO").unwrap().code(), "no");
+        assert_eq!(Country::parse(" jp ").unwrap().code(), "jp");
+        assert!(Country::parse("US").unwrap().is_default());
+        for bad in ["", "u", "usa", "1a", "n-", "ü1"] {
+            assert!(Country::parse(bad).is_none(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn a_country_reaches_both_search_and_lookup() {
+        let client = reqwest::Client::new();
+        let resolver = || Resolver::new(client.clone(), RateLimiter::new(20.0, 1.0));
+
+        let default = resolver();
+        assert!(!default.search_url("a", "b").contains("country="));
+        assert!(!default.lookup_url(1).contains("country="));
+
+        let norway = resolver().with_country(Country::parse("NO"));
+        assert!(norway.search_url("a", "b").ends_with("&country=no"));
+        assert!(norway.lookup_url(1).ends_with("&country=no"));
     }
 
     #[test]

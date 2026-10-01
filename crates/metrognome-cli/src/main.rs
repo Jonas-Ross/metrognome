@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use metrognome::resolve::Country;
 use metrognome::{Analysis, AnalysisOptions, Analyzer, AnalyzerConfig, Error, KeyProfile, Query};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
@@ -101,6 +102,10 @@ struct CommonOpts {
     /// Key profile set: `edm` (default) or `krumhansl`.
     #[arg(long, default_value = "edm", value_parser = parse_key_profile)]
     key_profile: KeyProfile,
+    /// iTunes storefront to look tracks up in, as a two-letter country code
+    /// (`gb`, `de`, `jp`). Defaults to Apple's default, the US store.
+    #[arg(long, value_parser = parse_country)]
+    country: Option<Country>,
     /// Where to keep the result cache. Defaults to the platform cache
     /// directory.
     #[arg(long)]
@@ -123,6 +128,10 @@ struct CommonOpts {
 
 fn parse_key_profile(s: &str) -> Result<KeyProfile, String> {
     KeyProfile::parse(s).ok_or_else(|| format!("unknown key profile: {s}"))
+}
+
+fn parse_country(s: &str) -> Result<Country, String> {
+    Country::parse(s).ok_or_else(|| format!("not a two-letter country code: {s}"))
 }
 
 impl CommonOpts {
@@ -181,6 +190,7 @@ impl CommonOpts {
                 explain_key_scoring: self.explain_key,
             },
             cache_path,
+            country: self.country.clone(),
         })
     }
 }
