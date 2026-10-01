@@ -205,6 +205,50 @@ fn missed(env: &[f32], fps: f32, period: f32, phase: f32, total: f32) -> f32 {
         .sum()
 }
 
+/// Mean of `x` on the beat grid at `period` and `phase`, both in frames.
+fn grid_mean(x: &[f32], period: f32, phase: f32) -> f32 {
+    let n = (((x.len() - 1) as f32 - phase) / period).floor() as usize + 1;
+    (0..n)
+        .map(|k| interp_at(x, phase + k as f32 * period))
+        .sum::<f32>()
+        / n as f32
+}
+
+/// Phase of the beat at `bpm`, in frames: the strongest onset just ahead of a
+/// rise in the kick band, or `fallback` where that band has no beat.
+///
+/// The comb's own phase is the loudest broadband onset, and per-band whitening
+/// lets a hat spanning forty bands outweigh a kick spanning three.
+fn beat_phase(env: &OnsetEnvelope, bpm: f32, fallback: f32) -> f32 {
+    let period = 60.0 * env.fps / bpm;
+    // Half-frame steps, as in the comb search.
+    let steps = (period * 2.0).ceil() as isize;
+    let at = |s: isize| (s as f32 * 0.5).rem_euclid(period);
+    let kick: Vec<f32> = (0..steps)
+        .map(|s| grid_mean(&env.kick, period, at(s)))
+        .collect();
+    let kick_at = |s: isize| kick[s.rem_euclid(steps) as usize];
+    let w = ((KICK_RISE_SECS * env.fps * 2.0).round() as isize).max(1);
+    let rises: Vec<f32> = (0..steps)
+        .map(|s| (1..=w).map(|i| kick_at(s + i) - kick_at(s - i)).sum())
+        .collect();
+    let sharpest = rises.iter().fold(0.0f32, |a, &v| a.max(v));
+    if sharpest <= 0.0 {
+        return fallback;
+    }
+    let lead = (KICK_LEAD_BEATS * period * 2.0).round() as isize;
+    let lag = (KICK_LAG_BEATS * period * 2.0).round() as isize;
+    let on_a_kick = |s: isize| {
+        (s - lag..=s + lead)
+            .any(|k| rises[k.rem_euclid(steps) as usize] >= KICK_RISE_SHARE * sharpest)
+    };
+    (0..steps)
+        .filter(|&s| on_a_kick(s))
+        .map(|s| (at(s), grid_mean(&env.values, period, at(s))))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map_or(fallback, |(phase, _)| phase)
+}
+
 /// A beat grid's fit at one tempo.
 #[derive(Debug, Clone, Copy)]
 struct CombScore {
@@ -370,6 +414,23 @@ const LATTICE_DIVISORS: [f32; 3] = [1.0, 2.0, 4.0];
 /// about the perceptual tolerance for "on the beat".
 const EXPLAIN_HALF_WIDTH_SECS: f32 = 0.030;
 
+/// Span over which the kick band's energy must rise for a phase to read as a
+/// kick: about one analysis window, which is how long the body takes to build.
+const KICK_RISE_SECS: f32 = 0.046;
+
+/// How far before the kick band's rise the beat's onset may sit, as a share of
+/// the beat. Low-band energy trails the transient by up to a window (0.1 beat
+/// at 128 BPM); a fifth stays clear of a sixteenth-note hat at a quarter.
+const KICK_LEAD_BEATS: f32 = 0.2;
+
+/// How far after that rise the onset may sit, as a share of the beat.
+const KICK_LAG_BEATS: f32 = 0.05;
+
+/// Share of the sharpest kick-band rise that still counts as a kick. Loose, so a
+/// breakbeat's syncopated kick cannot outvote the downbeat; previews read the
+/// same anywhere from 0.3 to 1.0.
+const KICK_RISE_SHARE: f32 = 0.5;
+
 /// Estimate tempo from an onset strength envelope.
 pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
     if env.values.len() < 32 {
@@ -476,7 +537,8 @@ pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
 
     // The envelope reacts to a transient before that transient is centred in
     // the analysis window, so the raw phase runs early by a fixed latency.
-    let beat_offset = (best.phase_frames / fps + env.latency_secs).max(0.0);
+    let phase = beat_phase(env, best.bpm, best.phase_frames);
+    let beat_offset = (phase / fps + env.latency_secs).max(0.0);
 
     // Rounding to two places can push a tempo just under the top edge over it,
     // so the reported number is clamped to the window rather than the reverse.
@@ -736,6 +798,65 @@ mod tests {
         );
     }
 
+    /// Distance from `offset_secs` to the nearest beat of a `bpm` grid with a
+    /// beat at zero, in beats.
+    fn off_the_beat(offset_secs: f32, bpm: f32) -> f32 {
+        let e = (offset_secs * bpm / 60.0).rem_euclid(1.0);
+        e.min(1.0 - e)
+    }
+
+    #[test]
+    fn beat_offset_lands_on_the_kick_not_an_offbeat_hat() {
+        // Open hats loud enough that the broadband envelope peaks on the offbeat.
+        let bpm = 128.0;
+        let mut sig = testsig::groove(bpm, 20.0, SR, Groove::FourOnFloor);
+        let hat = testsig::noise_burst(0.12, SR, 0.5, &mut testsig::Noise::new(7));
+        let beat = 60.0 / bpm * SR as f32;
+        for k in 0..(sig.len() as f32 / beat) as usize {
+            testsig::mix_at(&mut sig, &hat, ((k as f32 + 0.5) * beat) as usize);
+        }
+        let est = tempo_of(&sig);
+        assert!((est.bpm - bpm).abs() < 0.5, "{est:?}");
+        let off = off_the_beat(est.beat_offset_secs, bpm);
+        assert!(
+            off < 0.1,
+            "offset {} is {off} beats off the kick",
+            est.beat_offset_secs
+        );
+    }
+
+    #[test]
+    fn beat_offset_lands_on_the_kick_not_an_offbeat_stab() {
+        let bpm = 138.0;
+        let est = tempo_of(&testsig::groove(bpm, 20.0, SR, Groove::OffbeatTrance));
+        let off = off_the_beat(est.beat_offset_secs, bpm);
+        assert!(
+            off < 0.1,
+            "offset {} is {off} beats off the kick",
+            est.beat_offset_secs
+        );
+    }
+
+    #[test]
+    fn a_breakbeats_syncopated_kick_does_not_pull_the_beat_off_the_downbeat() {
+        // The kick on the "and" of 3 is the louder one; the snares on the beat
+        // must still settle the phase.
+        let bpm = 174.0;
+        let mut sig = testsig::groove(bpm, 20.0, SR, Groove::Breakbeat);
+        let kick = testsig::kick_hit(55.0, 0.18, SR, 0.3, &mut testsig::Noise::new(7));
+        let bar = 4.0 * 60.0 / bpm * SR as f32;
+        for b in 0..(sig.len() as f32 / bar) as usize {
+            testsig::mix_at(&mut sig, &kick, ((b as f32 + 2.5 / 4.0) * bar) as usize);
+        }
+        let est = tempo_of(&sig);
+        let off = off_the_beat(est.beat_offset_secs, bpm);
+        assert!(
+            off < 0.1,
+            "offset {} is {off} beats off the beat",
+            est.beat_offset_secs
+        );
+    }
+
     #[test]
     fn beatless_audio_is_flagged_uncertain() {
         let sig = testsig::sine(220.0, 30.0, SR);
@@ -786,6 +907,7 @@ mod tests {
     fn too_short_input_yields_nothing() {
         let env = OnsetEnvelope {
             values: vec![0.0; 8],
+            kick: vec![0.0; 8],
             fps: 172.0,
             latency_secs: 0.0,
             pulse_strength: 0.0,
