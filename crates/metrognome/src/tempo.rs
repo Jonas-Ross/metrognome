@@ -8,7 +8,7 @@ use crate::types::{
 };
 
 /// Identifier recorded on every tempo estimate.
-pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@4";
+pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@5";
 
 /// Tempo is checked against published references that agree across sources and
 /// passes every verified case. DECISIONS.md entries 31 and 32.
@@ -215,7 +215,7 @@ fn grid_mean(x: &[f32], period: f32, phase: f32) -> f32 {
 }
 
 /// Phase of the beat at `bpm`, in frames: the strongest onset just ahead of a
-/// rise in the kick band, or `fallback` where that band has no beat.
+/// rise in the kick band, or `fallback` where that band has no kick.
 ///
 /// The comb's own phase is the loudest broadband onset, and per-band whitening
 /// lets a hat spanning forty bands outweigh a kick spanning three.
@@ -230,10 +230,15 @@ fn beat_phase(env: &OnsetEnvelope, bpm: f32, fallback: f32) -> f32 {
     let kick_at = |s: isize| kick[s.rem_euclid(steps) as usize];
     let w = ((KICK_RISE_SECS * env.fps * 2.0).round() as isize).max(1);
     let rises: Vec<f32> = (0..steps)
-        .map(|s| (1..=w).map(|i| kick_at(s + i) - kick_at(s - i)).sum())
+        .map(|s| {
+            (1..=w)
+                .map(|i| kick_at(s + i) - kick_at(s - i))
+                .sum::<f32>()
+                / w as f32
+        })
         .collect();
     let sharpest = rises.iter().fold(0.0f32, |a, &v| a.max(v));
-    if sharpest <= 0.0 {
+    if sharpest < KICK_MIN_RISE {
         return fallback;
     }
     let lead = (KICK_LEAD_BEATS * period * 2.0).round() as isize;
@@ -430,6 +435,11 @@ const KICK_LAG_BEATS: f32 = 0.05;
 /// breakbeat's syncopated kick cannot outvote the downbeat; previews read the
 /// same anywhere from 0.3 to 1.0.
 const KICK_RISE_SHARE: f32 = 0.5;
+
+/// Smallest kick-band rise that anchors the phase, as a share of the clip's
+/// loudest frame. The quietest real kick measured rises 0.026; a bassline under
+/// high-passed drums stays below it until it is within about 10 dB of the snare.
+const KICK_MIN_RISE: f32 = 0.015;
 
 /// Estimate tempo from an onset strength envelope.
 pub fn estimate_tempo(env: &OnsetEnvelope) -> Option<TempoEstimate> {
@@ -833,6 +843,32 @@ mod tests {
         assert!(
             off < 0.1,
             "offset {} is {off} beats off the kick",
+            est.beat_offset_secs
+        );
+    }
+
+    #[test]
+    fn a_quiet_offbeat_bass_does_not_move_the_beat_off_kickless_drums() {
+        // High-passed drums, snare on every beat: nothing in the kick band
+        // but a bass note on the offbeats, 14 dB under the snare.
+        let bpm = 128.0;
+        let beat = 60.0 / bpm * SR as f32;
+        let mut sig = vec![0.0f32; 20 * SR as usize];
+        let mut noise = testsig::Noise::new(9);
+        let snare = testsig::noise_burst(0.12, SR, 0.5, &mut noise);
+        let hat = testsig::noise_burst(0.05, SR, 0.3, &mut noise);
+        let bass = testsig::drum_hit(55.0, 0.2, SR, 0.1, 6.0);
+        for k in 0..(sig.len() as f32 / beat) as usize {
+            let at = k as f32 * beat;
+            testsig::mix_at(&mut sig, &snare, at as usize);
+            testsig::mix_at(&mut sig, &hat, (at + beat / 2.0) as usize);
+            testsig::mix_at(&mut sig, &bass, (at + beat / 2.0) as usize);
+        }
+        let est = tempo_of(&sig);
+        let off = off_the_beat(est.beat_offset_secs, bpm);
+        assert!(
+            off < 0.1,
+            "offset {} is {off} beats off the snare",
             est.beat_offset_secs
         );
     }
