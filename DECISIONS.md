@@ -1262,8 +1262,8 @@ fourteen previews keep their phase to within a millisecond. Phases are
 identical with the share anywhere from 0.3 to 1.0. BPM and confidence are
 unchanged on all fifteen, since the comb's scoring is untouched.
 
-`ALGORITHM_VERSION` 10 to 11, because cached offsets move. `TEMPO_SOURCE`
-stays at `@3`: no BPM or confidence can change, and selecta does not store the
-offset, so a new label would only queue every stored tempo for a re-measure
-that returns the same number. The site's kick-locked metronome (entry 42) is
+`ALGORITHM_VERSION` 10 to 11 and `TEMPO_SOURCE` to `@4`, because the offset is
+part of the tempo estimate and its label must name what produced it. No BPM or
+confidence changes, so a selecta re-measure under the new label returns the
+same tempos. The site's kick-locked metronome (entry 42) is
 no longer needed once Selecta bumps its pin, though it does no harm.
