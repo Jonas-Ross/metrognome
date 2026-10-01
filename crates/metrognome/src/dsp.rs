@@ -363,7 +363,9 @@ fn kick_energy(mel: &[f32], spec: &Spectrogram) -> Vec<f32> {
         .take_while(|&m| mel_edge_hz(spec, m + 1) < KICK_BAND_HZ)
         .count();
     let energy: Vec<f32> = mel
-        .chunks_exact(N_MELS)
+        .as_chunks::<N_MELS>()
+        .0
+        .iter()
         .map(|frame| frame[..bands].iter().map(|v| v * v).sum())
         .collect();
     let peak = energy.iter().fold(0.0f32, |a, &v| a.max(v));
