@@ -261,8 +261,9 @@ pub struct OnsetEnvelope {
     /// Detrended, zero-mean, unit-variance onset strength, one value per frame.
     pub values: Vec<f32>,
     /// Energy in the mel bands under [`KICK_BAND_HZ`], one value per frame,
-    /// as a share of the clip's loudest frame. Linear and unwhitened, so a
-    /// kick outweighs a bassline swelling back in after it.
+    /// as a share of the clip's loudest frame across all bands. Linear and
+    /// unwhitened, so a kick outweighs a bassline swelling back in after it,
+    /// and a quiet low band stays quiet.
     pub kick: Vec<f32>,
     /// Frame rate in Hz.
     pub fps: f32,
@@ -356,8 +357,8 @@ pub fn onset_envelope(spec: &Spectrogram) -> OnsetEnvelope {
     }
 }
 
-/// Per-frame energy of the mel bands centred under [`KICK_BAND_HZ`], scaled so
-/// the loudest frame is 1.
+/// Per-frame energy of the mel bands centred under [`KICK_BAND_HZ`], as a share
+/// of the clip's loudest frame across all bands.
 fn kick_energy(mel: &[f32], spec: &Spectrogram) -> Vec<f32> {
     let bands = (0..N_MELS)
         .take_while(|&m| mel_edge_hz(spec, m + 1) < KICK_BAND_HZ)
@@ -368,7 +369,12 @@ fn kick_energy(mel: &[f32], spec: &Spectrogram) -> Vec<f32> {
         .iter()
         .map(|frame| frame[..bands].iter().map(|v| v * v).sum())
         .collect();
-    let peak = energy.iter().fold(0.0f32, |a, &v| a.max(v));
+    let peak = mel
+        .as_chunks::<N_MELS>()
+        .0
+        .iter()
+        .map(|frame| frame.iter().map(|v| v * v).sum::<f32>())
+        .fold(0.0f32, f32::max);
     if peak <= 0.0 {
         return vec![0.0; energy.len()];
     }
@@ -610,8 +616,9 @@ mod tests {
                 .iter()
                 .fold(0.0f32, |a, &v| a.max(v))
         };
-        assert!((peak(0.45) - 1.0).abs() < 1e-6, "kick {}", peak(0.45));
-        assert!(peak(1.45) < 0.05, "hat {}", peak(1.45));
+        let (kick, hat) = (peak(0.45), peak(1.45));
+        assert!(kick > 0.01 && kick <= 1.0, "kick {kick}");
+        assert!(hat < kick / 20.0, "hat {hat} against kick {kick}");
     }
 
     #[test]
