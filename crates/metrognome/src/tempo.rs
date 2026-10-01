@@ -8,7 +8,7 @@ use crate::types::{
 };
 
 /// Identifier recorded on every tempo estimate.
-pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@4";
+pub const TEMPO_SOURCE: &str = "metrognome/onset-autocorrelation-comb@5";
 
 /// Tempo is checked against published references that agree across sources and
 /// passes every verified case. DECISIONS.md entries 31 and 32.

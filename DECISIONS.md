@@ -1260,7 +1260,9 @@ The band is scaled to the clip's loudest frame across all bands, not its own,
 and its sharpest rise must reach 1.5% of that frame or the comb's phase stands.
 Without the floor, a quiet bassline under high-passed drums anchors the beat
 on itself. The quietest real kick measured rises 0.026 (FISHER); Born Slippy, at
-0.009, falls back and keeps the same phase either way.
+0.009, falls back and keeps the same phase either way. This floor landed just after
+the rest of the entry merged, so it bumps `ALGORITHM_VERSION` to 12 and
+`TEMPO_SOURCE` to `@5` again: a kickless clip's offset can move.
 
 Results: Sandstorm moves to 0.01, `OffbeatTrance` to 0.01, and the other
 fourteen previews keep their phase to within a millisecond. Phases are
