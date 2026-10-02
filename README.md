@@ -34,6 +34,10 @@ metrognome validate   # accuracy check against known tracks, needs network
 - Results are cached on disk by resolved iTunes store track ID, so a track is
   analyzed once. Resolutions are cached too — that is the rate-limited step.
   `--cache-path` moves the database, `--no-cache` bypasses it.
+- Tracks are looked up in the US iTunes store unless `--country` names another
+  (`--country gb`, `--country jp`). Use the store your library comes from: a
+  release sold only in your country is no match in the US one, and stores
+  outside the US spell some artists in their own script.
 
 ## Output
 

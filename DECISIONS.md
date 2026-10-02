@@ -1273,3 +1273,24 @@ Shipped in two steps. The kick anchor took `ALGORITHM_VERSION` 10 to 11 and
 tempo estimate, so its label must name what produced it. No BPM or confidence
 changes, so a selecta re-measure under the new label returns the same tempos. The site's kick-locked metronome (entry 42) is
 no longer needed once Selecta bumps its pin, though it does no harm.
+
+## 44. The store country is a flag, defaulting to Apple's US default
+
+The iTunes Search API answers from the US store when no `country` is sent, and
+metrognome never sent one, which only worked because its first library was
+bought in North America. A stranger's library breaks two ways: releases sold
+only in their store come back as `no_match`, and stores localize names, so a
+Japanese library's "久石譲 — Summer" resolved in the US store to a different
+artist's "Summer" (match 0.65, flagged uncertain) where `--country jp` matches
+exactly.
+
+**A flag, not a guess from the locale.** The storefront is the Apple ID's
+country, which the system locale does not reliably tell, and a wrong guess is a
+silent change of every match. selecta, which knows its user, passes it.
+
+**The default store stays out of the cache key.** Resolutions are cached by
+query text, so a different store gets its own key (`q2@jp:…`, `id@jp:N`), but
+no country and `us` keep the old key: an existing cache stays warm, which at
+twenty searches a minute is hours of a large library. Analyses stay keyed by
+track ID alone, since a store track ID names one recording in every store.
+
