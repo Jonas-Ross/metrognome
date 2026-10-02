@@ -755,7 +755,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "metrognome"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rayon",
  "reqwest",
@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "metrognome-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "metrognome-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "metrognome",
  "serde",
