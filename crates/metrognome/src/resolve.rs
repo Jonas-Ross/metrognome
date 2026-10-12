@@ -284,15 +284,25 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
 }
 
 /// Whether every word of the candidate's artist is in the query's, and every
-/// query word it lacks appears in the candidate's title.
+/// query word it lacks appears in the feature credit of the candidate's title.
 fn credits_moved_to_title(q_artist: &str, c_artist: &str, cand_title: &str) -> bool {
     let q: Vec<&str> = q_artist.split_whitespace().collect();
     let title = normalize(cand_title);
     let title: Vec<&str> = title.split_whitespace().collect();
+    // Only the credit clause: a song titled after the missing artist is no
+    // credit. The first word is skipped as in strip_features.
+    let credit = match title
+        .iter()
+        .skip(1)
+        .position(|t| FEATURE_MARKERS.contains(t))
+    {
+        Some(i) => &title[i + 2..],
+        None => &[],
+    };
     c_artist.split_whitespace().all(|t| q.contains(&t))
         && q.iter()
             .filter(|t| **t != "and" && !c_artist.split_whitespace().any(|u| u == **t))
-            .all(|t| title.contains(t))
+            .all(|t| credit.contains(t))
 }
 
 /// Choose the best candidate for a query, ignoring any without a preview.
@@ -661,6 +671,14 @@ mod tests {
             ..store.clone()
         };
         let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[uncredited]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+
+        // A song named after the missing artist credits no one.
+        let named_after = ItunesTrack {
+            track_name: Some("Kobe".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem Kobe", "Kobe", &[named_after]).unwrap();
         assert!(m.uncertain, "score {}", m.match_score);
 
         // Nor does a shared word make a different act the same one.
