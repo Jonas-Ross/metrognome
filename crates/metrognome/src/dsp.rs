@@ -30,6 +30,12 @@ const ONSET_HOP_DIVISOR: usize = 8;
 /// octave of the bass register into one.
 const CHROMA_WINDOW_SECS: f32 = 0.185;
 
+/// Analysis window for the band key scorer.
+///
+/// ~372 ms, twice the chroma window: a semitone in the bass register is under
+/// 3 Hz wide, and the band scorer reads the bass line as evidence of its own.
+const KEY_BANDS_WINDOW_SECS: f32 = 16_384.0 / 44_100.0;
+
 /// Lowest frequency admitted to the chromagram.
 ///
 /// A2, where one semitone is 6.5 Hz against 5.4 Hz bins — the lowest pitch the
@@ -158,6 +164,17 @@ impl Stft {
     pub fn for_chroma(sample_rate: u32) -> Self {
         let n_fft = next_pow2((CHROMA_WINDOW_SECS * sample_rate as f32) as usize);
         Stft::new(n_fft, (n_fft / 4).max(1))
+    }
+
+    /// STFT sized for the band key scorer at `sample_rate`.
+    ///
+    /// Rounded to a multiple of 256 rather than a power of two, so the window
+    /// lasts the same at every rate and the learned weights see the same
+    /// resolution they were fitted at.
+    pub fn for_key_bands(sample_rate: u32) -> Self {
+        let n_fft =
+            (((KEY_BANDS_WINDOW_SECS * sample_rate as f32) / 256.0).round() as usize).max(1) * 256;
+        Stft::new(n_fft, (n_fft / 8).max(1))
     }
 
     /// Frame rate in Hz for this STFT at `sample_rate`.
@@ -527,6 +544,11 @@ mod tests {
         // 48 kHz must land on the next size up rather than silently changing
         // the analysis duration.
         assert_eq!(Stft::for_onsets(48_000).n_fft, 4096);
+
+        let k = Stft::for_key_bands(44_100);
+        assert_eq!((k.n_fft, k.hop), (16_384, 2048));
+        let k48 = Stft::for_key_bands(48_000);
+        assert!((k48.n_fft as f32 / 48_000.0 - k.n_fft as f32 / 44_100.0).abs() < 0.003);
     }
 
     #[test]

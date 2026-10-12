@@ -1294,3 +1294,83 @@ no country and `us` keep the old key: an existing cache stays warm, which at
 twenty searches a minute is hours of a large library. Analyses stay keyed by
 track ID alone, since a store track ID names one recording in every store.
 
+
+## 45. Key is scored by learned per-register profiles, measured on 1,763 labelled tracks
+
+Testing selecta #181 on Jonas's library found 955 of its 1,351 keyless tracks
+analysed and flagged uncertain. Entry 31 said key had nothing to be measured
+against; that was true of the hand-checked reference set, not of the field. The
+GiantSteps key datasets are 2-minute Beatport previews of electronic dance
+music with keys labelled by people: 604 tracks in one, 1,159 confidently
+labelled in the other. That is a ground truth in exactly the genre selecta's
+library is, and the first thing it measured was the shipped scorer.
+
+**The old scorer was worse than its confidence said.** On the middle 30 seconds
+of each preview, `chroma-correlation-edm@3` named the right key 32% of the time
+on one set and 30% on the other. Worse, the keys it reported as confident were
+right 41% and 38% of the time: most stored metrognome keys are wrong, and the
+`uncertain` flag was not catching it. Krumhansl did worse on both counts.
+
+**What was tried**, all trained on one dataset and scored on the other:
+
+- Other published profiles on the old chroma: Temperley 23%, Albrecht &
+  Shanahan 40%, profiles averaged from the training set 44%.
+- Front end, with averaged profiles: log compression (+2 points), whitening
+  across frequency (+3), reading only the bin on each semitone, a median filter
+  over time (inside noise), tuning correction (worse).
+- A discriminative model on the whitened chroma split into five registers:
+  61% on one set, 55% on the other.
+- Pairwise chroma co-occurrence and bass-against-treble features on top of
+  that: no gain. A small neural network: overfits, 49-60%.
+
+**What ships is the five-register linear model** (`key/bands.rs`). A ~372 ms
+window resolves semitones down to C1, the spectrum is log-compressed and
+whitened, and each register (bass octaves up to C6, then one wide band) keeps
+its own twelve-bin chroma. Each key is scored against a learned profile per
+register and the 24 scores go through a softmax. It is a key profile in the
+same sense as Krumhansl's, 120 weights in a table, fitted rather than taken
+from listener experiments on classical music. The weights read as music: tonic
+heaviest, then the fifth, then the third that names the mode.
+
+**Confidence is the winning key's probability, and it is calibrated.** On held-
+out tracks a confidence of 0.6-0.8 was right 73-83% of the time and 0.8-1.0 was
+right 82-87%. Above the 0.5 threshold, held-out coverage goes from 37% to 48%
+of tracks on one set and 29% to 44% on the other, while the share of those
+that are right goes from 41% to 77% and from 38% to 70%. More keys, and the
+kept ones are mostly right.
+
+The flat-chroma and duration gates stay. The coverage gate moves down to 3-4
+tonal pitch classes: whitening sharpens the chroma, real tracks measure 3.7 and
+up, and the sparse ones were the most often right, so the old 3.5-5.5 ramp only
+threw away good answers. It stays for a drone, a bare fifth and power chords,
+where no labelled track vouches for the prior.
+
+**The model carries a mode prior, and that is a choice.** It learned that dance
+music is mostly minor (67% and 85% of the two sets), so a C major and A minor
+coin flip now answers A minor at 0.67 where the correlation scorers said
+neither. That is the right bet in this library and the wrong one for a pop
+record; the confidence is a probability for electronic music, not for music.
+Either way the Camelot number is the pair's shared one, which is what a mix
+uses. The riff test now asks for the right wheel position rather than for
+uncertainty, since an E-G-B riff is an E minor chord.
+
+**Checked on real store previews too.** 150 labelled tracks from the larger set
+looked up in iTunes, scored with weights fitted only on the other set: 91
+matched confidently. Bands named 49% exactly against 35% for `edm`, kept 42%
+against 24%, and was right on 63% of those it kept against 50%. Smaller sample,
+different 30 seconds of a possibly different edit, so a little lower than on
+Beatport's own previews; the same direction on every count.
+
+The ten-track `validate` set moves less well: two of the three documented keys
+went from agree to disagree-or-discard. Born Slippy reads G minor (0.30,
+discarded) against a published Bb, its relative major; Sandstorm still reads E
+minor, now at 0.79. Three anecdotes against 1,763 labels is the trade entry 32
+asked for.
+
+`bands` is the new default; `edm` and `krumhansl` stay one flag away and score
+exactly as before (their pins did not move). `KEY_SCORER_VERSION` goes to 4,
+which also relabels those two with output unchanged; the cost is a re-measure
+for anyone running them, against a second version counter. `ALGORITHM_VERSION`
+goes to 13. Key stays provisional: 55-61% exact is a measurement now, and it is
+not a number to call validated. `tools/keyfit` has the dataset, the benchmark
+and the fit, so the weights can be refit and the numbers rerun.

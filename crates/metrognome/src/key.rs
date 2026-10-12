@@ -1,20 +1,27 @@
 //! Musical key estimation.
 //!
-//! Chromagram, then correlation against key profiles for all 24 rotations. The
-//! output carries both standard notation and Camelot, because the consumer is a
-//! DJ-adjacent tool and Camelot is what harmonic mixing actually uses.
+//! Two kinds of scorer: the default band scorer ([`band_chroma`]), learned profiles per
+//! register read as probabilities, and correlation of one chromagram against a
+//! hand-made profile for all 24 rotations. The output carries both standard
+//! notation and Camelot, because the consumer is a DJ-adjacent tool and Camelot
+//! is what harmonic mixing actually uses.
 
-use crate::dsp::{Spectrogram, CHROMA_FMAX, CHROMA_FMIN};
+use crate::dsp::{Spectrogram, Stft, CHROMA_FMAX, CHROMA_FMIN};
 use crate::types::{Alternate, KeyEstimate, KeyScoring, Maturity, UNCERTAIN_AT_OR_BELOW};
 
-/// Published key data contradicts itself, so there is no reference to measure
-/// key against. Synthetic material rules out a rotation error and nothing more.
-/// DECISIONS.md entries 31 and 32.
+mod bands;
+mod weights;
+
+use bands::key_probabilities;
+pub use bands::{band_chroma, BandChroma, BANDS};
+
+/// Measured at 55-61% exact on labelled dance music the scorer never saw: far
+/// better than before, short of validated. DECISIONS.md entries 31 and 45.
 pub const KEY_MATURITY: Maturity = Maturity::Provisional;
 
 /// The `@N` on every key `source`. Consumers re-measure stored keys by that
 /// label, so bump it whenever a change can move any key estimate or confidence.
-pub const KEY_SCORER_VERSION: u32 = 3;
+pub const KEY_SCORER_VERSION: u32 = 4;
 
 /// Pitch-class names, spelled the way the Camelot wheel spells them.
 ///
@@ -23,9 +30,12 @@ const PITCH_NAMES: [&str; 12] = [
     "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
 ];
 
-/// Which key profile set to correlate against.
+/// Which key scorer to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyProfile {
+    /// A learned profile per register, scored as probabilities. See [`estimate_key_bands`].
+    #[default]
+    Bands,
     /// Krumhansl-Schmuckler probe-tone profiles (1990).
     ///
     /// The usual baseline, from listener experiments on Western classical
@@ -36,30 +46,62 @@ pub enum KeyProfile {
     /// Heavier tonic and dominant, which pulls a relative-key confusion apart
     /// on material leaning on a repeated root. See DECISIONS.md for the
     /// provenance caveat on these coefficients.
+    Edm,
+}
+
+/// The scorers that correlate one chromagram against a hand-made profile, the
+/// only ones [`estimate_key`] can run: the band scorer reads its own front end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CorrelationProfile {
+    /// See [`KeyProfile::Krumhansl`].
+    Krumhansl,
+    /// See [`KeyProfile::Edm`].
     #[default]
     Edm,
 }
 
-impl KeyProfile {
+impl CorrelationProfile {
     fn profiles(self) -> (&'static [f32; 12], &'static [f32; 12]) {
         match self {
-            KeyProfile::Krumhansl => (&KS_MAJOR, &KS_MINOR),
-            KeyProfile::Edm => (&EDM_MAJOR, &EDM_MINOR),
+            CorrelationProfile::Krumhansl => (&KS_MAJOR, &KS_MINOR),
+            CorrelationProfile::Edm => (&EDM_MAJOR, &EDM_MINOR),
+        }
+    }
+}
+
+impl From<CorrelationProfile> for KeyProfile {
+    fn from(p: CorrelationProfile) -> Self {
+        match p {
+            CorrelationProfile::Krumhansl => KeyProfile::Krumhansl,
+            CorrelationProfile::Edm => KeyProfile::Edm,
+        }
+    }
+}
+
+impl KeyProfile {
+    /// The correlation scorer this names, `None` for [`KeyProfile::Bands`].
+    pub fn correlation(self) -> Option<CorrelationProfile> {
+        match self {
+            KeyProfile::Bands => None,
+            KeyProfile::Krumhansl => Some(CorrelationProfile::Krumhansl),
+            KeyProfile::Edm => Some(CorrelationProfile::Edm),
         }
     }
 
     fn source(self) -> String {
         let name = match self {
-            KeyProfile::Krumhansl => "krumhansl",
-            KeyProfile::Edm => "edm",
+            KeyProfile::Bands => "band-profiles",
+            KeyProfile::Krumhansl => "chroma-correlation-krumhansl",
+            KeyProfile::Edm => "chroma-correlation-edm",
         };
-        format!("metrognome/chroma-correlation-{name}@{KEY_SCORER_VERSION}")
+        format!("metrognome/{name}@{KEY_SCORER_VERSION}")
     }
 
     /// Parse a profile name as accepted on the command line.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "krumhansl" | "ks" => Some(KeyProfile::Krumhansl),
+            "bands" => Some(KeyProfile::Bands),
             "edm" | "shaath" => Some(KeyProfile::Edm),
             _ => None,
         }
@@ -302,6 +344,20 @@ const COVERAGE_FLOOR: f32 = 3.5;
 /// above, so a real progression is not penalized for stopping short of seven.
 const COVERAGE_SATURATION: f32 = 5.5;
 
+/// Tonal pitch classes below which the band scorer names no key with any
+/// confidence.
+///
+/// Lower than [`COVERAGE_FLOOR`] because whitening sharpens the chroma: real
+/// tracks measure 3.7 and up, and the sparse ones are the most often right, so
+/// the gate is for a drone, a bare fifth or power chords, where the learned
+/// prior would otherwise answer for a clip that names nothing.
+const BAND_COVERAGE_FLOOR: f32 = 3.0;
+
+/// Tonal pitch classes at which the band scorer's coverage gate lets go.
+///
+/// Below 1% of 1,763 labelled tracks, so the gate costs a point of coverage.
+const BAND_COVERAGE_SATURATION: f32 = 4.0;
+
 /// Linear ramp from `floor` to `saturation`, clamped to 0-1.
 ///
 /// Three of the four confidence factors are this shape, so they are worth
@@ -323,11 +379,33 @@ fn relation(tonic: usize, minor: bool, other_tonic: usize, other_minor: bool) ->
     }
 }
 
+/// Estimate the key from mono PCM with the given scorer.
+///
+/// Each scorer reads its own front end, so this is the entry point analysis
+/// goes through; the chroma-level functions below are for diagnostics and tests.
+pub fn key_from_pcm(
+    samples: &[f32],
+    sample_rate: u32,
+    profile: KeyProfile,
+) -> Option<(KeyEstimate, KeyScoring)> {
+    match profile.correlation() {
+        None => {
+            let stft = Stft::for_key_bands(sample_rate);
+            estimate_key_bands(&band_chroma(&stft.magnitudes(samples, sample_rate)))
+        }
+        Some(correlation) => {
+            let stft = Stft::for_chroma(sample_rate);
+            let chroma = chromagram(&stft.magnitudes(samples, sample_rate));
+            estimate_key_scored(&chroma, correlation)
+        }
+    }
+}
+
 /// Estimate the key from a chromagram.
 ///
 /// Returns `None` when there is no tonal content to work with at all, rather
 /// than naming a key nothing supports.
-pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstimate> {
+pub fn estimate_key(chroma: &Chromagram, profile: CorrelationProfile) -> Option<KeyEstimate> {
     estimate_key_scored(chroma, profile).map(|(est, _)| est)
 }
 
@@ -337,25 +415,18 @@ pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstim
 /// asked, so a normal payload stays free of the estimator's internals.
 pub fn estimate_key_scored(
     chroma: &Chromagram,
-    profile: KeyProfile,
+    profile: CorrelationProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
+    let (major, minor) = profile.profiles();
     if chroma.seconds < MIN_CHROMA_SECS {
         return None;
     }
-    let (major, minor) = profile.profiles();
     let mut scores: Vec<(f32, usize, bool)> = Vec::with_capacity(24);
     for tonic in 0..12 {
         scores.push((correlate(&chroma.bins, major, tonic), tonic, false));
         scores.push((correlate(&chroma.bins, minor, tonic), tonic, true));
     }
-    // Tonic then mode as tiebreakers, so an entirely flat chroma still gives a
-    // deterministic (and, thanks to the confidence below, plainly untrusted)
-    // answer rather than depending on sort order.
-    scores.sort_by(|a, b| {
-        b.0.total_cmp(&a.0)
-            .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
-    });
+    rank(&mut scores);
 
     let (r1, tonic, is_minor) = scores[0];
     let r2 = scores[1].0;
@@ -370,19 +441,100 @@ pub fn estimate_key_scored(
     // Relative to the winner, so a lead of 0.05 over a correlation of 0.95
     // counts for less than the same lead over 0.30.
     let margin = 1.0 - (-((r1 - r2) / r1) / KEY_MARGIN_SCALE).exp();
-    // Gates on the chroma itself: below the salience floor the chroma is flat
-    // and any fit is an accident, and below the coverage floor there are too
-    // few pitch classes to choose a key from, however well the profiles fit.
-    let salience = chroma.salience();
-    let tonal_pitch_classes = chroma.tonal_pitch_classes();
-    let structure = ramp(salience, STRUCTURE_FLOOR, STRUCTURE_SATURATION);
-    let coverage = ramp(tonal_pitch_classes, COVERAGE_FLOOR, COVERAGE_SATURATION);
+    let (salience, tonal_pitch_classes, structure, coverage) = gates(chroma);
     // No factor substitutes for another: a correlation that ties with the
     // relative minor is a coin flip, a clear winner among weak correlations is
     // noise, and a clear winner over three pitch classes is a riff several keys
     // would claim.
-    let confidence = crate::types::normalize_confidence(strength * margin * structure * coverage);
+    let scoring = KeyScoring {
+        correlation: r1,
+        runner_up: r2,
+        salience,
+        tonal_pitch_classes,
+        strength,
+        margin,
+        structure,
+        coverage,
+    };
+    Some((
+        finish(&scores, tonic, is_minor, &scoring, profile.into()),
+        scoring,
+    ))
+}
 
+/// Estimate the key with the band scorer.
+///
+/// Confidence is the winning key's probability, gated like the correlation
+/// scorers on a flat chroma and on too few pitch classes to choose from.
+pub fn estimate_key_bands(chroma: &BandChroma) -> Option<(KeyEstimate, KeyScoring)> {
+    if chroma.total.seconds < MIN_CHROMA_SECS || chroma.total.bins.iter().sum::<f32>() <= 0.0 {
+        return None;
+    }
+    let probs = key_probabilities(chroma);
+    let mut scores: Vec<(f32, usize, bool)> =
+        (0..24).map(|i| (probs[i], i / 2, i % 2 == 1)).collect();
+    rank(&mut scores);
+    let (p1, tonic, is_minor) = scores[0];
+    let (salience, tonal_pitch_classes, structure, _) = gates(&chroma.total);
+    let coverage = ramp(
+        tonal_pitch_classes,
+        BAND_COVERAGE_FLOOR,
+        BAND_COVERAGE_SATURATION,
+    );
+    let scoring = KeyScoring {
+        correlation: p1,
+        runner_up: scores[1].0,
+        salience,
+        tonal_pitch_classes,
+        strength: p1,
+        // The probability already prices in every rival key.
+        margin: 1.0,
+        structure,
+        coverage,
+    };
+    Some((
+        finish(&scores, tonic, is_minor, &scoring, KeyProfile::Bands),
+        scoring,
+    ))
+}
+
+/// Best first, tonic then mode as tiebreakers, so an entirely flat chroma still
+/// gives a deterministic (and, thanks to the confidence, plainly untrusted)
+/// answer rather than depending on sort order.
+fn rank(scores: &mut [(f32, usize, bool)]) {
+    scores.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+}
+
+/// Salience, tonal pitch classes, and the structure and coverage gates on them.
+///
+/// Below the salience floor the chroma is flat and any fit is an accident, and
+/// below the coverage floor there are too few pitch classes to choose a key
+/// from, however well the profiles fit.
+fn gates(chroma: &Chromagram) -> (f32, f32, f32, f32) {
+    let salience = chroma.salience();
+    let tonal_pitch_classes = chroma.tonal_pitch_classes();
+    (
+        salience,
+        tonal_pitch_classes,
+        ramp(salience, STRUCTURE_FLOOR, STRUCTURE_SATURATION),
+        ramp(tonal_pitch_classes, COVERAGE_FLOOR, COVERAGE_SATURATION),
+    )
+}
+
+/// The estimate for the top of a ranked score list.
+fn finish(
+    scores: &[(f32, usize, bool)],
+    tonic: usize,
+    is_minor: bool,
+    s: &KeyScoring,
+    profile: KeyProfile,
+) -> KeyEstimate {
+    let confidence =
+        crate::types::normalize_confidence(s.strength * s.margin * s.structure * s.coverage);
     let mode = if is_minor { "minor" } else { "major" };
     let alternates = scores[1..4]
         .iter()
@@ -400,33 +552,18 @@ pub fn estimate_key_scored(
             score: (score * 1000.0).round() / 1000.0,
         })
         .collect();
-
-    let scoring = KeyScoring {
-        correlation: r1,
-        runner_up: r2,
-        salience,
-        tonal_pitch_classes,
-        strength,
-        margin,
-        structure,
-        coverage,
-    };
-
-    Some((
-        KeyEstimate {
-            key: format!("{} {mode}", PITCH_NAMES[tonic]),
-            tonic: PITCH_NAMES[tonic].to_string(),
-            mode: mode.to_string(),
-            camelot: camelot(tonic, is_minor),
-            confidence,
-            uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
-            maturity: KEY_MATURITY,
-            source: profile.source(),
-            alternates,
-            scoring: None,
-        },
-        scoring,
-    ))
+    KeyEstimate {
+        key: format!("{} {mode}", PITCH_NAMES[tonic]),
+        tonic: PITCH_NAMES[tonic].to_string(),
+        mode: mode.to_string(),
+        camelot: camelot(tonic, is_minor),
+        confidence,
+        uncertain: confidence <= UNCERTAIN_AT_OR_BELOW,
+        maturity: KEY_MATURITY,
+        source: profile.source(),
+        alternates,
+        scoring: None,
+    }
 }
 
 #[cfg(test)]
@@ -437,10 +574,10 @@ mod tests {
 
     const SR: u32 = 44_100;
 
+    const ALL: [KeyProfile; 3] = [KeyProfile::Bands, KeyProfile::Edm, KeyProfile::Krumhansl];
+
     fn key_of(signal: &[f32], profile: KeyProfile) -> Option<KeyEstimate> {
-        let stft = Stft::for_chroma(SR);
-        let chroma = chromagram(&stft.magnitudes(signal, SR));
-        estimate_key(&chroma, profile)
+        key_from_pcm(signal, SR, profile).map(|(est, _)| est)
     }
 
     #[test]
@@ -485,7 +622,7 @@ mod tests {
 
     #[test]
     fn major_progressions_are_recovered_on_both_profile_sets() {
-        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+        for profile in ALL {
             for pc in [0usize, 5, 7, 10] {
                 let sig = testsig::chord_progression(pc as u8, Quality::Major, 12.0, SR);
                 let est = key_of(&sig, profile).expect("key");
@@ -502,7 +639,7 @@ mod tests {
 
     #[test]
     fn minor_progressions_are_recovered_on_both_profile_sets() {
-        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+        for profile in ALL {
             for pc in [9usize, 2, 5, 3] {
                 let sig = testsig::chord_progression(pc as u8, Quality::Minor, 12.0, SR);
                 let est = key_of(&sig, profile).expect("key");
@@ -523,7 +660,7 @@ mod tests {
         // by a constant, passes the eight spot checks above and fails elsewhere
         // on the circle. Too few tracks carry a documented key to catch it.
         let mut wrong = Vec::new();
-        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+        for profile in ALL {
             for pc in 0..12u8 {
                 for (quality, mode) in [(Quality::Major, "major"), (Quality::Minor, "minor")] {
                     let sig = testsig::chord_progression(pc, quality, 8.0, SR);
@@ -594,29 +731,59 @@ mod tests {
     fn a_riff_on_three_pitch_classes_is_not_a_confident_key() {
         // The regression this guards: correlation happily fits a profile to a
         // chroma with nine near-empty bins, and used to report it at 1.00.
-        for (name, sig) in [
-            ("riff", three_note_riff()),
-            ("riff over drums", over_drums(&three_note_riff(), 1.0, 0.8)),
-            (
-                "riff over loud drums",
-                over_drums(&three_note_riff(), 0.8, 1.5),
-            ),
-            ("power chords", power_chords()),
-            (
-                "power chords over drums",
-                over_drums(&power_chords(), 1.0, 0.8),
-            ),
-            (
-                "power chords over loud drums",
-                over_drums(&power_chords(), 0.8, 1.5),
-            ),
-        ] {
-            let est = key_of(&sig, KeyProfile::Edm).expect("key");
-            assert!(
-                est.uncertain,
-                "{name} read as a confident {} at {}",
-                est.key, est.confidence
-            );
+        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+            for (name, sig) in [
+                ("riff", three_note_riff()),
+                ("riff over drums", over_drums(&three_note_riff(), 1.0, 0.8)),
+                (
+                    "riff over loud drums",
+                    over_drums(&three_note_riff(), 0.8, 1.5),
+                ),
+            ] {
+                let est = key_of(&sig, profile).expect("key");
+                assert!(
+                    est.uncertain,
+                    "{profile:?} {name}: {} at {}",
+                    est.key, est.confidence
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_scorer_reads_a_triad_riff_as_its_own_triad() {
+        // E, G and B are an E minor chord. On labelled dance music the sparse
+        // clips are the ones the band scorer gets right most often, so it may
+        // be sure; it must at least be sure of the right wheel position.
+        for sig in [three_note_riff(), over_drums(&three_note_riff(), 0.8, 1.5)] {
+            let est = key_of(&sig, KeyProfile::Bands).expect("key");
+            assert_eq!(est.camelot.trim_end_matches(['A', 'B']), "9", "{est:?}");
+        }
+    }
+
+    #[test]
+    fn power_chords_are_not_a_confident_key() {
+        // Fifths with no third: nothing in the clip states a mode, and the
+        // band scorer's mode prior must not be read as if it did.
+        for profile in ALL {
+            for (name, sig) in [
+                ("power chords", power_chords()),
+                (
+                    "power chords over drums",
+                    over_drums(&power_chords(), 1.0, 0.8),
+                ),
+                (
+                    "power chords over loud drums",
+                    over_drums(&power_chords(), 0.8, 1.5),
+                ),
+            ] {
+                let est = key_of(&sig, profile).expect("key");
+                assert!(
+                    est.uncertain,
+                    "{profile:?} {name}: {} at {}",
+                    est.key, est.confidence
+                );
+            }
         }
     }
 
@@ -628,9 +795,11 @@ mod tests {
         ] {
             let refs: Vec<&[f32]> = groups.iter().map(|g| g.as_slice()).collect();
             let sig = testsig::note_sequence(&refs, 12.0, SR);
-            let est = key_of(&sig, KeyProfile::Edm).expect("key");
-            assert_eq!(est.confidence, 0.0, "{name}: {est:?}");
-            assert!(est.uncertain, "{name}: {est:?}");
+            for profile in ALL {
+                let est = key_of(&sig, profile).expect("key");
+                assert_eq!(est.confidence, 0.0, "{name}: {est:?}");
+                assert!(est.uncertain, "{name}: {est:?}");
+            }
         }
     }
 
@@ -654,12 +823,14 @@ mod tests {
                 testsig::note_sequence(&[&dim1, &dim2, &dim1, &dim2], 12.0, SR),
             ),
         ] {
-            let est = key_of(&sig, KeyProfile::Edm).expect("key");
-            assert!(
-                est.uncertain,
-                "{name} read as a confident {} at {}",
-                est.key, est.confidence
-            );
+            for profile in ALL {
+                let est = key_of(&sig, profile).expect("key");
+                assert!(
+                    est.uncertain,
+                    "{profile:?} {name}: {} at {}",
+                    est.key, est.confidence
+                );
+            }
         }
     }
 
@@ -670,15 +841,22 @@ mod tests {
         let c: [f32; 4] = [48.0, 52.0, 55.0, 60.0];
         let am: [f32; 4] = [45.0, 48.0, 52.0, 57.0];
         let sig = testsig::note_sequence(&[&c, &am, &c, &am], 12.0, SR);
-        let est = key_of(&sig, KeyProfile::Edm).expect("key");
-        assert!(est.uncertain, "coin flip read as confident: {est:?}");
+        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+            let est = key_of(&sig, profile).expect("key");
+            assert!(est.uncertain, "coin flip read as confident: {est:?}");
+        }
+        // The band scorer breaks the tie with what dance music usually does,
+        // minor, and its confidence is how often that is right. Either way the
+        // wheel position is the pair's shared one.
+        let est = key_of(&sig, KeyProfile::Bands).expect("key");
+        assert_eq!(est.camelot.trim_end_matches(['A', 'B']), "8", "{est:?}");
     }
 
     #[test]
     fn no_synthetic_key_reaches_full_confidence() {
         // Chroma correlation over a 30-second clip cannot earn certainty, so
         // 1.00 must stay out of reach even on noiseless single-key material.
-        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+        for profile in ALL {
             for pc in 0..12u8 {
                 for quality in [Quality::Major, Quality::Minor] {
                     let sig = testsig::chord_progression(pc, quality, 8.0, SR);
@@ -698,7 +876,7 @@ mod tests {
         // The other half of the bargain: tightening confidence must not flag a
         // clean, unambiguous progression as a hint.
         let mut weak = Vec::new();
-        for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
+        for profile in ALL {
             for pc in 0..12u8 {
                 for (quality, mode) in [(Quality::Major, "major"), (Quality::Minor, "minor")] {
                     let sig = testsig::chord_progression(pc, quality, 8.0, SR);
@@ -770,12 +948,10 @@ mod tests {
     #[test]
     fn drums_alone_do_not_produce_a_confident_key() {
         let sig = testsig::groove(128.0, 20.0, SR, Groove::FourOnFloor);
-        match key_of(&sig, KeyProfile::Edm) {
-            None => {}
-            Some(est) => assert!(
-                est.uncertain,
-                "percussion must not read as a confident key: {est:?}"
-            ),
+        for profile in ALL {
+            if let Some(est) = key_of(&sig, profile) {
+                assert!(est.uncertain, "percussion read as a key: {est:?}");
+            }
         }
     }
 
@@ -785,9 +961,10 @@ mod tests {
         // anything does, because correlation cannot see how flat the chroma is.
         // The correlation floor is what stops this reading as a real key.
         let sig = testsig::click_track(122.0, 20.0, SR);
-        match key_of(&sig, KeyProfile::Edm) {
-            None => {}
-            Some(est) => assert!(est.uncertain, "click track read as a key: {est:?}"),
+        for profile in ALL {
+            if let Some(est) = key_of(&sig, profile) {
+                assert!(est.uncertain, "click track read as a key: {est:?}");
+            }
         }
     }
 
@@ -820,7 +997,7 @@ mod tests {
         let stft = Stft::for_chroma(SR);
         let best = |sig: &[f32]| {
             let c = chromagram(&stft.magnitudes(sig, SR));
-            estimate_key_scored(&c, KeyProfile::Edm)
+            estimate_key_scored(&c, CorrelationProfile::Edm)
                 .map(|(_, s)| s.correlation)
                 .unwrap_or(0.0)
         };
@@ -872,7 +1049,7 @@ mod tests {
                         .collect();
                     let chroma = chromagram(&stft.magnitudes(&sig, sr));
                     assert!(
-                        estimate_key_scored(&chroma, KeyProfile::Edm).is_none(),
+                        estimate_key_scored(&chroma, CorrelationProfile::Edm).is_none(),
                         "{sr}Hz, {secs}s, seed {seed} produced a key"
                     );
                 }
@@ -894,7 +1071,7 @@ mod tests {
                 let sig = testsig::chord_progression(9, Quality::Minor, secs, sr);
                 let chroma = chromagram(&stft.magnitudes(&sig, sr));
                 (
-                    estimate_key_scored(&chroma, KeyProfile::Edm).is_some(),
+                    estimate_key_scored(&chroma, CorrelationProfile::Edm).is_some(),
                     chroma.seconds,
                 )
             };
@@ -902,6 +1079,57 @@ mod tests {
             assert!(!short, "{sr}Hz: named a key from {short_secs}s of chroma");
             let (long, long_secs) = key_of(MIN_CHROMA_SECS + 0.1);
             assert!(long, "{sr}Hz: named no key from {long_secs}s of chroma");
+        }
+    }
+
+    #[test]
+    fn the_band_scorer_names_no_key_from_a_short_clip_at_any_rate() {
+        // Its window is twice the chroma window, so the duration gate has to
+        // hold on its own front end too, not just the correlation scorers'.
+        for sr in [22_050u32, 44_100, 48_000, 96_000] {
+            let short = testsig::chord_progression(9, Quality::Minor, MIN_CHROMA_SECS - 0.1, sr);
+            assert!(
+                key_from_pcm(&short, sr, KeyProfile::Bands).is_none(),
+                "{sr}Hz"
+            );
+            let long = testsig::chord_progression(9, Quality::Minor, MIN_CHROMA_SECS + 0.3, sr);
+            assert!(
+                key_from_pcm(&long, sr, KeyProfile::Bands).is_some(),
+                "{sr}Hz"
+            );
+            for seed in 1..10u32 {
+                let mut g = testsig::Noise::new(seed);
+                let sig: Vec<f32> = (0..(sr as f32 * 0.5) as usize)
+                    .map(|_| g.next_sample() * 0.3)
+                    .collect();
+                assert!(
+                    key_from_pcm(&sig, sr, KeyProfile::Bands).is_none(),
+                    "{sr}Hz seed {seed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_scorer_agrees_with_itself_across_sample_rates() {
+        // The weights were fitted at 44.1kHz; the window is sized in seconds
+        // so a 48kHz store file reads the same evidence.
+        for (pc, quality) in [
+            (9u8, Quality::Minor),
+            (2, Quality::Major),
+            (6, Quality::Minor),
+        ] {
+            let keys: Vec<String> = [44_100u32, 48_000]
+                .iter()
+                .map(|&sr| {
+                    let sig = testsig::chord_progression(pc, quality, 8.0, sr);
+                    key_from_pcm(&sig, sr, KeyProfile::Bands)
+                        .expect("key")
+                        .0
+                        .key
+                })
+                .collect();
+            assert_eq!(keys[0], keys[1]);
         }
     }
 
@@ -926,41 +1154,57 @@ mod tests {
 
     #[test]
     fn silence_yields_no_key() {
-        assert!(key_of(&vec![0.0f32; SR as usize * 2], KeyProfile::Edm).is_none());
+        for profile in ALL {
+            assert!(key_of(&vec![0.0f32; SR as usize * 2], profile).is_none());
+        }
     }
 
-    /// Scorer output on fixed material, as (key, confidence, correlation).
-    /// Re-pin only alongside a [`KEY_SCORER_VERSION`] bump.
-    const PINNED_VERSION: u32 = 3;
+    /// Scorer output on fixed material, as (key, confidence, correlation), the
+    /// last being the winner's probability for the band scorer. Re-pin only
+    /// alongside a [`KEY_SCORER_VERSION`] bump.
+    const PINNED_VERSION: u32 = 4;
     type Pin = (&'static str, KeyProfile, Option<(&'static str, f32, f32)>);
     #[rustfmt::skip]
     const PINNED: &[Pin] = &[
-        ("C major", KeyProfile::Edm, Some(("C major", 0.977, 0.960))),
-        ("C major", KeyProfile::Krumhansl, Some(("C major", 0.963, 0.938))),
-        ("A minor", KeyProfile::Edm, Some(("A minor", 0.903, 0.957))),
-        ("A minor", KeyProfile::Krumhansl, Some(("A minor", 0.915, 0.947))),
-        ("F# major", KeyProfile::Edm, Some(("F# major", 0.930, 0.926))),
-        ("F# major", KeyProfile::Krumhansl, Some(("F# major", 0.919, 0.933))),
-        ("Eb minor", KeyProfile::Edm, Some(("Eb minor", 0.930, 0.940))),
-        ("Eb minor", KeyProfile::Krumhansl, Some(("Eb minor", 0.873, 0.868))),
-        ("Eb minor over drums", KeyProfile::Edm, Some(("Eb minor", 0.934, 0.939))),
-        ("Eb minor over drums", KeyProfile::Krumhansl, Some(("Eb minor", 0.880, 0.869))),
-        ("relative coin flip", KeyProfile::Edm, Some(("C major", 0.133, 0.853))),
-        ("relative coin flip", KeyProfile::Krumhansl, Some(("C major", 0.051, 0.821))),
-        ("riff over drums", KeyProfile::Edm, Some(("E minor", 0.191, 0.848))),
-        ("riff over drums", KeyProfile::Krumhansl, Some(("E minor", 0.167, 0.819))),
-        ("power chords", KeyProfile::Edm, Some(("B major", 0.000, 0.833))),
-        ("power chords", KeyProfile::Krumhansl, Some(("B major", 0.000, 0.844))),
-        ("whole-tone chords", KeyProfile::Edm, Some(("Bb major", 0.000, 0.247))),
-        ("whole-tone chords", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.242))),
-        ("drums", KeyProfile::Edm, Some(("D minor", 0.000, 0.401))),
-        ("drums", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.336))),
-        ("clicks", KeyProfile::Edm, Some(("B minor", 0.000, 0.356))),
-        ("clicks", KeyProfile::Krumhansl, Some(("B minor", 0.000, 0.393))),
-        ("noise", KeyProfile::Edm, Some(("G minor", 0.000, 0.338))),
-        ("noise", KeyProfile::Krumhansl, Some(("D minor", 0.000, 0.362))),
-        ("short clip", KeyProfile::Edm, None),
-        ("short clip", KeyProfile::Krumhansl, None),
+    ("C major", KeyProfile::Bands, Some(("C major", 0.657, 0.657))),
+    ("C major", KeyProfile::Edm, Some(("C major", 0.977, 0.960))),
+    ("C major", KeyProfile::Krumhansl, Some(("C major", 0.963, 0.938))),
+    ("A minor", KeyProfile::Bands, Some(("A minor", 0.792, 0.792))),
+    ("A minor", KeyProfile::Edm, Some(("A minor", 0.903, 0.957))),
+    ("A minor", KeyProfile::Krumhansl, Some(("A minor", 0.915, 0.947))),
+    ("F# major", KeyProfile::Bands, Some(("F# major", 0.674, 0.674))),
+    ("F# major", KeyProfile::Edm, Some(("F# major", 0.930, 0.926))),
+    ("F# major", KeyProfile::Krumhansl, Some(("F# major", 0.919, 0.933))),
+    ("Eb minor", KeyProfile::Bands, Some(("Eb minor", 0.695, 0.695))),
+    ("Eb minor", KeyProfile::Edm, Some(("Eb minor", 0.930, 0.940))),
+    ("Eb minor", KeyProfile::Krumhansl, Some(("Eb minor", 0.873, 0.868))),
+    ("Eb minor over drums", KeyProfile::Bands, Some(("Eb minor", 0.664, 0.664))),
+    ("Eb minor over drums", KeyProfile::Edm, Some(("Eb minor", 0.934, 0.939))),
+    ("Eb minor over drums", KeyProfile::Krumhansl, Some(("Eb minor", 0.880, 0.869))),
+    ("relative coin flip", KeyProfile::Bands, Some(("A minor", 0.673, 0.673))),
+    ("relative coin flip", KeyProfile::Edm, Some(("C major", 0.133, 0.853))),
+    ("relative coin flip", KeyProfile::Krumhansl, Some(("C major", 0.051, 0.821))),
+    ("riff over drums", KeyProfile::Bands, Some(("E minor", 0.941, 0.941))),
+    ("riff over drums", KeyProfile::Edm, Some(("E minor", 0.191, 0.848))),
+    ("riff over drums", KeyProfile::Krumhansl, Some(("E minor", 0.167, 0.819))),
+    ("power chords", KeyProfile::Bands, Some(("B minor", 0.233, 0.701))),
+    ("power chords", KeyProfile::Edm, Some(("B major", 0.000, 0.833))),
+    ("power chords", KeyProfile::Krumhansl, Some(("B major", 0.000, 0.844))),
+    ("whole-tone chords", KeyProfile::Bands, Some(("Bb minor", 0.089, 0.089))),
+    ("whole-tone chords", KeyProfile::Edm, Some(("Bb major", 0.000, 0.247))),
+    ("whole-tone chords", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.242))),
+    ("drums", KeyProfile::Bands, Some(("F minor", 0.271, 0.271))),
+    ("drums", KeyProfile::Edm, Some(("D minor", 0.000, 0.401))),
+    ("drums", KeyProfile::Krumhansl, Some(("Bb major", 0.000, 0.336))),
+    ("clicks", KeyProfile::Bands, Some(("E minor", 0.401, 0.401))),
+    ("clicks", KeyProfile::Edm, Some(("B minor", 0.000, 0.356))),
+    ("clicks", KeyProfile::Krumhansl, Some(("B minor", 0.000, 0.393))),
+    ("noise", KeyProfile::Bands, Some(("Bb minor", 0.058, 0.091))),
+    ("noise", KeyProfile::Edm, Some(("G minor", 0.000, 0.338))),
+    ("noise", KeyProfile::Krumhansl, Some(("D minor", 0.000, 0.362))),
+    ("short clip", KeyProfile::Bands, None),
+    ("short clip", KeyProfile::Edm, None),
+    ("short clip", KeyProfile::Krumhansl, None),
     ];
 
     fn pinned_material() -> Vec<(&'static str, Vec<f32>)> {
@@ -1026,12 +1270,10 @@ mod tests {
     fn key_output_only_changes_with_the_scorer_version() {
         // selecta targets stored keys by their `@N` label, so an output change
         // under an unchanged label strands every key measured before it.
-        let stft = Stft::for_chroma(SR);
         let mut observed = Vec::new();
         for (name, sig) in pinned_material() {
-            let chroma = chromagram(&stft.magnitudes(&sig, SR));
-            for profile in [KeyProfile::Edm, KeyProfile::Krumhansl] {
-                let got = estimate_key_scored(&chroma, profile)
+            for profile in ALL {
+                let got = key_from_pcm(&sig, SR, profile)
                     .map(|(e, s)| (e.key, e.confidence, s.correlation));
                 observed.push((name, profile, got));
             }
@@ -1075,6 +1317,7 @@ mod tests {
 
     #[test]
     fn profile_names_parse_the_way_the_cli_spells_them() {
+        assert_eq!(KeyProfile::parse("bands"), Some(KeyProfile::Bands));
         assert_eq!(KeyProfile::parse("edm"), Some(KeyProfile::Edm));
         assert_eq!(KeyProfile::parse("Krumhansl"), Some(KeyProfile::Krumhansl));
         assert_eq!(KeyProfile::parse("ks"), Some(KeyProfile::Krumhansl));

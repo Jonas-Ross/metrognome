@@ -162,9 +162,10 @@ pub struct KeyEstimate {
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct KeyScoring {
-    /// Correlation of the winning profile.
+    /// Correlation of the winning profile; the winner's probability for the
+    /// band scorer.
     pub correlation: f32,
-    /// Correlation of the runner-up.
+    /// The same for the runner-up.
     pub runner_up: f32,
     /// Chroma salience, before the structure floor is applied.
     pub salience: f32,
