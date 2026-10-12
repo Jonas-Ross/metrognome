@@ -23,7 +23,7 @@ const MAX_SEARCH_BYTES: usize = 1024 * 1024;
 ///
 /// The resolution cache is keyed by query text, so without this a matching fix
 /// would never reach anyone whose cache is already warm.
-pub const MATCHER_VERSION: u32 = 2;
+pub const MATCHER_VERSION: u32 = 3;
 
 /// How many search results to consider.
 ///
@@ -274,8 +274,25 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
     {
         artist = artist.max(0.9);
     }
+    // The reverse: a library crediting "Eminem/Dido" where the store credits
+    // Eminem and puts Dido in the title as a feature.
+    if !c_artist.is_empty() && credits_moved_to_title(&q_artist, &c_artist, cand_title) {
+        artist = artist.max(0.9);
+    }
 
     TITLE_WEIGHT * title + (1.0 - TITLE_WEIGHT) * artist
+}
+
+/// Whether every word of the candidate's artist is in the query's, and every
+/// query word it lacks appears in the candidate's title.
+fn credits_moved_to_title(q_artist: &str, c_artist: &str, cand_title: &str) -> bool {
+    let q: Vec<&str> = q_artist.split_whitespace().collect();
+    let title = normalize(cand_title);
+    let title: Vec<&str> = title.split_whitespace().collect();
+    c_artist.split_whitespace().all(|t| q.contains(&t))
+        && q.iter()
+            .filter(|t| **t != "and" && !c_artist.split_whitespace().any(|u| u == **t))
+            .all(|t| title.contains(t))
 }
 
 /// Choose the best candidate for a query, ignoring any without a preview.
@@ -616,6 +633,39 @@ mod tests {
             split_qualifier("Strobe (Club Mix) [feat. Guest]"),
             ("strobe".into(), "club mix".into())
         );
+    }
+
+    #[test]
+    fn a_collaborator_the_store_credits_in_the_title_is_the_same_recording() {
+        let store = ItunesTrack {
+            track_id: Some(1),
+            track_name: Some("Talkin’ 2 Myself (feat. Kobe)".into()),
+            artist_name: Some("Eminem".into()),
+            collection_name: None,
+            release_date: None,
+            primary_genre_name: None,
+            preview_url: Some("https://example/p.m4a".into()),
+            track_time_millis: None,
+        };
+        let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[store.clone()]).unwrap();
+        assert!(!m.uncertain, "score {}", m.match_score);
+
+        // Without the credit anywhere, the missing collaborator still counts.
+        let uncredited = ItunesTrack {
+            track_name: Some("Talkin’ 2 Myself".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[uncredited]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+
+        // Nor does a shared word make a different act the same one.
+        let other_act = ItunesTrack {
+            track_name: Some("Sun & Moon".into()),
+            artist_name: Some("Beyond".into()),
+            ..store
+        };
+        let m = pick_best("Above & Beyond", "Sun & Moon", &[other_act]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
     }
 
     #[test]
