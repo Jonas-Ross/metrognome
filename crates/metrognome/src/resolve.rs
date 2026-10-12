@@ -647,7 +647,12 @@ mod tests {
             preview_url: Some("https://example/p.m4a".into()),
             track_time_millis: None,
         };
-        let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[store.clone()]).unwrap();
+        let m = pick_best(
+            "Eminem/Kobe",
+            "Talkin’ 2 myself",
+            std::slice::from_ref(&store),
+        )
+        .unwrap();
         assert!(!m.uncertain, "score {}", m.match_score);
 
         // Without the credit anywhere, the missing collaborator still counts.
