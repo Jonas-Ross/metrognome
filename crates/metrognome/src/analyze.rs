@@ -5,7 +5,7 @@
 //! to the WebAssembly build, passes through here.
 
 use crate::dsp::{onset_envelope, Stft};
-use crate::key::{chromagram, estimate_key_scored, KeyProfile};
+use crate::key::{key_from_pcm, KeyProfile};
 use crate::tempo::estimate_tempo;
 use crate::types::Features;
 
@@ -71,9 +71,7 @@ pub fn analyze_pcm_with(samples: &[f32], sample_rate: u32, options: &AnalysisOpt
             estimate_tempo(&env)
         },
         || {
-            let stft = Stft::for_chroma(sample_rate);
-            let chroma = chromagram(&stft.magnitudes(samples, sample_rate));
-            estimate_key_scored(&chroma, options.key_profile).map(|(mut est, scoring)| {
+            key_from_pcm(samples, sample_rate, options.key_profile).map(|(mut est, scoring)| {
                 if options.explain_key_scoring {
                     est.scoring = Some(scoring);
                 }

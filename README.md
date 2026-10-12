@@ -74,7 +74,7 @@ moving existing ones.
       "confidence": 0.79,
       "uncertain": false,
       "maturity": "provisional",
-      "source": "metrognome/chroma-correlation-edm@2",
+      "source": "metrognome/band-profiles@4",
       "alternates": [
         { "value": 8.0, "label": "C major (8B)", "relation": "relative_major", "score": 0.681 }
       ]
@@ -149,8 +149,10 @@ reporting genuinely slow music at double time. Alternates are always included so
 a consumer can override.
 
 Key comes out in both standard notation and Camelot (`"F minor"`, `"4A"`),
-correlated against EDM-weighted profiles by default;
-`--key-profile krumhansl` switches to the classical Krumhansl-Schmuckler set.
+scored by default against a learned key profile per register (bass, mids,
+leads), fitted to 1,763 electronic tracks with human-labelled keys;
+`--key-profile edm` and `--key-profile krumhansl` switch to correlation against
+a single hand-made profile.
 `--explain-key` attaches the factors behind the confidence to each result, which
 is how a surprising key is diagnosed over a set of tracks `validate` does not
 cover.
@@ -160,10 +162,11 @@ the output should not be read as though they were. Tempo is checked against
 published figures that agree across sources, and every case with a verified
 reference passes. Key has no comparable reference: published key data
 contradicts itself — the same track is listed in different keys by the same
-source — so there is nothing to measure against. What is verified is that key
-estimation recovers all twenty-four keys from unambiguous synthetic material on
-both profile sets, which rules out a systematic rotation but says nothing about
-real recordings.
+source. What there is: the GiantSteps datasets, electronic dance music labelled
+by people. On tracks it was not fitted to, the default scorer names the exact
+key 55-61% of the time, and the keys it does not flag uncertain are right
+70-77% of the time (`tools/keyfit`, DECISIONS.md 45). Better than anything
+before it, and not good enough to call validated.
 
 That split is in the output, not just here: tempo carries
 `"maturity": "validated"` and key carries `"maturity": "provisional"`, so a
@@ -175,11 +178,10 @@ diagnosed, but only tempo decides the exit status.
 Every estimate carries a 0-1 confidence. Previews are sometimes a beatless intro
 or a breakdown, and a low confidence score is the estimator telling you so.
 
-For key, confidence measures how determined the key is, not how neatly a profile
-fits. A clip has to state enough distinct pitch classes to choose between keys:
-a riff on two or three, or a run of fifths with no third in them, scores near
-zero however cleanly it correlates. Confidence does not reach 1.0 — chroma
-correlation over a 30-second clip cannot earn certainty.
+For key, confidence is the probability the scorer gives its answer, and on
+labelled tracks it is about as often right as it says. A drone, a bare fifth or
+power chords score near zero, since nothing in them names a mode. The scorer is
+fitted to dance music, which is mostly minor, and its probabilities assume that.
 
 Two commands check accuracy, and both print a markdown table to **stderr** with
 a machine-readable report on stdout:

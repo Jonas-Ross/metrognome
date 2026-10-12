@@ -74,7 +74,7 @@ pub unsafe extern "C" fn mg_analyze(
     let profile = if krumhansl != 0 {
         KeyProfile::Krumhansl
     } else {
-        KeyProfile::Edm
+        KeyProfile::default()
     };
     let json = serde_json::to_vec(&analyze(samples, sample_rate, profile))
         .unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#).into_bytes());

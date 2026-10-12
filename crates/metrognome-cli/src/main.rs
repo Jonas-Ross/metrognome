@@ -78,8 +78,8 @@ enum Command {
         /// Sample rate to synthesize at.
         #[arg(long, default_value_t = 44_100)]
         sample_rate: u32,
-        /// Key profile set: `edm` (default) or `krumhansl`.
-        #[arg(long, default_value = "edm", value_parser = parse_key_profile)]
+        /// Key scorer: `bands` (default), `edm` or `krumhansl`.
+        #[arg(long, default_value = "bands", value_parser = parse_key_profile)]
         key_profile: KeyProfile,
     },
     /// Download a preview clip and print decoded PCM statistics as JSON.
@@ -99,8 +99,8 @@ struct CommonOpts {
     /// How many requests may be issued back to back from idle.
     #[arg(long, default_value_t = metrognome::ratelimit::DEFAULT_BURST)]
     burst: f64,
-    /// Key profile set: `edm` (default) or `krumhansl`.
-    #[arg(long, default_value = "edm", value_parser = parse_key_profile)]
+    /// Key scorer: `bands` (default), `edm` or `krumhansl`.
+    #[arg(long, default_value = "bands", value_parser = parse_key_profile)]
     key_profile: KeyProfile,
     /// iTunes storefront to look tracks up in, as a two-letter country code
     /// (`gb`, `de`, `jp`). Defaults to Apple's default, the US store.
