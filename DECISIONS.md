@@ -1374,3 +1374,24 @@ for anyone running them, against a second version counter. `ALGORITHM_VERSION`
 goes to 13. Key stays provisional: 55-61% exact is a measurement now, and it is
 not a number to call validated. `tools/keyfit` has the dataset, the benchmark
 and the fit, so the weights can be refit and the numbers rerun.
+
+
+## 46. A co-artist the store moved into the title is a credit difference
+
+Jonas's 2026-10-12 key re-measure re-ran 237 tracks whose stored tempo came
+from an uncertain match, saved before selecta discarded those. Their searches,
+re-fetched and re-scored, said why the matches were uncertain. In 22 of the
+first 31 the right recording was simply not among Apple's results ("High By the
+Beach" is missing from Lana Del Rey's whole search catalogue, in the US and
+Canadian stores alike), so the best candidate was another song and the scorer
+was right to flag it. Most of the rest were a different version of the right
+title: a remix, a "pt2", a DJ-mix segment. A wider search or a looser score
+would have turned those into confident wrong matches.
+
+One pattern was the scorer's fault. A library credits "Eminem/Kobe"; the store
+credits Eminem and titles the track "Talkin' 2 Myself (feat. Kobe)". The
+existing credit rule only forgave extra names on the store's side, so the
+library's extra name sank the artist score. The reverse now counts as a credit
+difference too, but only when every name the store left out of the artist
+appears in its title; without that, "Above & Beyond" would match an act called
+Beyond. `MATCHER_VERSION` goes to 3.
