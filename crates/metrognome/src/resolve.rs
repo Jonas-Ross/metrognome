@@ -284,25 +284,54 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
 }
 
 /// Whether every word of the candidate's artist is in the query's, and every
-/// query word it lacks appears in the feature credit of the candidate's title.
+/// query word it lacks is credited in the candidate's title.
 fn credits_moved_to_title(q_artist: &str, c_artist: &str, cand_title: &str) -> bool {
     let q: Vec<&str> = q_artist.split_whitespace().collect();
-    let title = normalize(cand_title);
-    let title: Vec<&str> = title.split_whitespace().collect();
-    // Only the credit clause: a song titled after the missing artist is no
-    // credit. The first word is skipped as in strip_features.
-    let credit = match title
-        .iter()
-        .skip(1)
-        .position(|t| FEATURE_MARKERS.contains(t))
-    {
-        Some(i) => &title[i + 2..],
-        None => &[],
-    };
+    let credit = credited_names(cand_title);
     c_artist.split_whitespace().all(|t| q.contains(&t))
         && q.iter()
             .filter(|t| **t != "and" && !c_artist.split_whitespace().any(|u| u == **t))
-            .all(|t| credit.contains(t))
+            .all(|t| credit.iter().any(|c| c == t))
+}
+
+/// The words a title's feature credit names. "With" counts only inside
+/// brackets: outside them it is as likely the song's name ("Dance with Me").
+fn credited_names(title: &str) -> Vec<String> {
+    let (mut bracketed, mut bare) = (String::new(), String::new());
+    let mut depth = 0i32;
+    for ch in title.chars() {
+        match ch {
+            // A space, so adjacent groups do not fuse (see split_qualifier).
+            '(' | '[' => {
+                depth += 1;
+                bracketed.push(' ');
+            }
+            ')' | ']' => {
+                depth = (depth - 1).max(0);
+                bracketed.push(' ');
+            }
+            c if depth > 0 => bracketed.push(c),
+            c => bare.push(c),
+        }
+    }
+    let after_marker = |s: &str, skip: usize, with_counts: bool| -> Vec<String> {
+        let n = normalize(s);
+        let tokens: Vec<&str> = n.split_whitespace().collect();
+        tokens
+            .iter()
+            .skip(skip)
+            .position(|t| FEATURE_MARKERS.contains(t) && (with_counts || *t != "with"))
+            .map_or_else(Vec::new, |i| {
+                tokens[skip + i + 1..]
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect()
+            })
+    };
+    // A bare title's first word is its name, as in strip_features.
+    let mut names = after_marker(&bracketed, 0, true);
+    names.extend(after_marker(&bare, 1, false));
+    names
 }
 
 /// Choose the best candidate for a query, ignoring any without a preview.
@@ -680,6 +709,22 @@ mod tests {
         };
         let m = pick_best("Eminem Kobe", "Kobe", &[named_after]).unwrap();
         assert!(m.uncertain, "score {}", m.match_score);
+        let with_in_name = ItunesTrack {
+            track_name: Some("Dance with Kobe".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem/Kobe", "Dance with Kobe", &[with_in_name]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+
+        // A bracketed "with" is a credit, as is a bare "ft.".
+        for credited in ["Talkin’ 2 Myself (with Kobe)", "Talkin’ 2 Myself ft. Kobe"] {
+            let store = ItunesTrack {
+                track_name: Some(credited.into()),
+                ..store.clone()
+            };
+            let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[store]).unwrap();
+            assert!(!m.uncertain, "{credited}: score {}", m.match_score);
+        }
 
         // Nor does a shared word make a different act the same one.
         let other_act = ItunesTrack {

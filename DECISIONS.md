@@ -1393,6 +1393,7 @@ credits Eminem and titles the track "Talkin' 2 Myself (feat. Kobe)". The
 existing credit rule only forgave extra names on the store's side, so the
 library's extra name sank the artist score. The reverse now counts as a credit
 difference too, but only when every name the store left out of the artist
-appears in the title's feature credit; without that, "Above & Beyond" would
-match an act called Beyond, and a song titled "Guest" by Artist would pass for
-"Artist Guest". `MATCHER_VERSION` goes to 3.
+appears in the title's feature credit: after "feat.", "ft." or "featuring", or
+after "with" inside brackets only. Without that, "Above & Beyond" would match an
+act called Beyond, and a song named "Guest" or "Dance with Guest" by Artist
+would pass for a collaboration with Guest. `MATCHER_VERSION` goes to 3.
