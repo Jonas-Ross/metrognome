@@ -23,7 +23,7 @@ const MAX_SEARCH_BYTES: usize = 1024 * 1024;
 ///
 /// The resolution cache is keyed by query text, so without this a matching fix
 /// would never reach anyone whose cache is already warm.
-pub const MATCHER_VERSION: u32 = 2;
+pub const MATCHER_VERSION: u32 = 3;
 
 /// How many search results to consider.
 ///
@@ -274,8 +274,64 @@ pub fn score_match(query_artist: &str, query_title: &str, cand: &ItunesTrack) ->
     {
         artist = artist.max(0.9);
     }
+    // The reverse: a library crediting "Eminem/Dido" where the store credits
+    // Eminem and puts Dido in the title as a feature.
+    if !c_artist.is_empty() && credits_moved_to_title(&q_artist, &c_artist, cand_title) {
+        artist = artist.max(0.9);
+    }
 
     TITLE_WEIGHT * title + (1.0 - TITLE_WEIGHT) * artist
+}
+
+/// Whether every word of the candidate's artist is in the query's, and every
+/// query word it lacks is credited in the candidate's title.
+fn credits_moved_to_title(q_artist: &str, c_artist: &str, cand_title: &str) -> bool {
+    let q: Vec<&str> = q_artist.split_whitespace().collect();
+    let credit = credited_names(cand_title);
+    c_artist.split_whitespace().all(|t| q.contains(&t))
+        && q.iter()
+            .filter(|t| **t != "and" && !c_artist.split_whitespace().any(|u| u == **t))
+            .all(|t| credit.iter().any(|c| c == t))
+}
+
+/// The words a title's feature credit names. "With" counts only inside
+/// brackets: outside them it is as likely the song's name ("Dance with Me").
+fn credited_names(title: &str) -> Vec<String> {
+    let (mut bracketed, mut bare) = (String::new(), String::new());
+    let mut depth = 0i32;
+    for ch in title.chars() {
+        match ch {
+            // A space, so adjacent groups do not fuse (see split_qualifier).
+            '(' | '[' => {
+                depth += 1;
+                bracketed.push(' ');
+            }
+            ')' | ']' => {
+                depth = (depth - 1).max(0);
+                bracketed.push(' ');
+            }
+            c if depth > 0 => bracketed.push(c),
+            c => bare.push(c),
+        }
+    }
+    let after_marker = |s: &str, skip: usize, with_counts: bool| -> Vec<String> {
+        let n = normalize(s);
+        let tokens: Vec<&str> = n.split_whitespace().collect();
+        tokens
+            .iter()
+            .skip(skip)
+            .position(|t| FEATURE_MARKERS.contains(t) && (with_counts || *t != "with"))
+            .map_or_else(Vec::new, |i| {
+                tokens[skip + i + 1..]
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect()
+            })
+    };
+    // A bare title's first word is its name, as in strip_features.
+    let mut names = after_marker(&bracketed, 0, true);
+    names.extend(after_marker(&bare, 1, false));
+    names
 }
 
 /// Choose the best candidate for a query, ignoring any without a preview.
@@ -616,6 +672,68 @@ mod tests {
             split_qualifier("Strobe (Club Mix) [feat. Guest]"),
             ("strobe".into(), "club mix".into())
         );
+    }
+
+    #[test]
+    fn a_collaborator_the_store_credits_in_the_title_is_the_same_recording() {
+        let store = ItunesTrack {
+            track_id: Some(1),
+            track_name: Some("Talkin’ 2 Myself (feat. Kobe)".into()),
+            artist_name: Some("Eminem".into()),
+            collection_name: None,
+            release_date: None,
+            primary_genre_name: None,
+            preview_url: Some("https://example/p.m4a".into()),
+            track_time_millis: None,
+        };
+        let m = pick_best(
+            "Eminem/Kobe",
+            "Talkin’ 2 myself",
+            std::slice::from_ref(&store),
+        )
+        .unwrap();
+        assert!(!m.uncertain, "score {}", m.match_score);
+
+        // Without the credit anywhere, the missing collaborator still counts.
+        let uncredited = ItunesTrack {
+            track_name: Some("Talkin’ 2 Myself".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[uncredited]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+
+        // A song named after the missing artist credits no one.
+        let named_after = ItunesTrack {
+            track_name: Some("Kobe".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem Kobe", "Kobe", &[named_after]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+        let with_in_name = ItunesTrack {
+            track_name: Some("Dance with Kobe".into()),
+            ..store.clone()
+        };
+        let m = pick_best("Eminem/Kobe", "Dance with Kobe", &[with_in_name]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
+
+        // A bracketed "with" is a credit, as is a bare "ft.".
+        for credited in ["Talkin’ 2 Myself (with Kobe)", "Talkin’ 2 Myself ft. Kobe"] {
+            let store = ItunesTrack {
+                track_name: Some(credited.into()),
+                ..store.clone()
+            };
+            let m = pick_best("Eminem/Kobe", "Talkin’ 2 myself", &[store]).unwrap();
+            assert!(!m.uncertain, "{credited}: score {}", m.match_score);
+        }
+
+        // Nor does a shared word make a different act the same one.
+        let other_act = ItunesTrack {
+            track_name: Some("Sun & Moon".into()),
+            artist_name: Some("Beyond".into()),
+            ..store
+        };
+        let m = pick_best("Above & Beyond", "Sun & Moon", &[other_act]).unwrap();
+        assert!(m.uncertain, "score {}", m.match_score);
     }
 
     #[test]
