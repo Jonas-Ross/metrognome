@@ -13,7 +13,7 @@ mod bands;
 mod weights;
 
 use bands::key_probabilities;
-pub use bands::{band_chroma, BandChroma};
+pub use bands::{band_chroma, BandChroma, BANDS};
 
 /// Measured at 55-61% exact on labelled dance music the scorer never saw: far
 /// better than before, short of validated. DECISIONS.md entries 31 and 45.
@@ -49,13 +49,42 @@ pub enum KeyProfile {
     Edm,
 }
 
+/// The scorers that correlate one chromagram against a hand-made profile, the
+/// only ones [`estimate_key`] can run: the band scorer reads its own front end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CorrelationProfile {
+    /// See [`KeyProfile::Krumhansl`].
+    Krumhansl,
+    /// See [`KeyProfile::Edm`].
+    #[default]
+    Edm,
+}
+
+impl CorrelationProfile {
+    fn profiles(self) -> (&'static [f32; 12], &'static [f32; 12]) {
+        match self {
+            CorrelationProfile::Krumhansl => (&KS_MAJOR, &KS_MINOR),
+            CorrelationProfile::Edm => (&EDM_MAJOR, &EDM_MINOR),
+        }
+    }
+}
+
+impl From<CorrelationProfile> for KeyProfile {
+    fn from(p: CorrelationProfile) -> Self {
+        match p {
+            CorrelationProfile::Krumhansl => KeyProfile::Krumhansl,
+            CorrelationProfile::Edm => KeyProfile::Edm,
+        }
+    }
+}
+
 impl KeyProfile {
-    /// Profile pair for the correlation scorers; `None` for [`KeyProfile::Bands`].
-    fn profiles(self) -> Option<(&'static [f32; 12], &'static [f32; 12])> {
+    /// The correlation scorer this names, `None` for [`KeyProfile::Bands`].
+    pub fn correlation(self) -> Option<CorrelationProfile> {
         match self {
             KeyProfile::Bands => None,
-            KeyProfile::Krumhansl => Some((&KS_MAJOR, &KS_MINOR)),
-            KeyProfile::Edm => Some((&EDM_MAJOR, &EDM_MINOR)),
+            KeyProfile::Krumhansl => Some(CorrelationProfile::Krumhansl),
+            KeyProfile::Edm => Some(CorrelationProfile::Edm),
         }
     }
 
@@ -359,14 +388,15 @@ pub fn key_from_pcm(
     sample_rate: u32,
     profile: KeyProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
-    match profile {
-        KeyProfile::Bands => {
+    match profile.correlation() {
+        None => {
             let stft = Stft::for_key_bands(sample_rate);
             estimate_key_bands(&band_chroma(&stft.magnitudes(samples, sample_rate)))
         }
-        _ => {
+        Some(correlation) => {
             let stft = Stft::for_chroma(sample_rate);
-            estimate_key_scored(&chromagram(&stft.magnitudes(samples, sample_rate)), profile)
+            let chroma = chromagram(&stft.magnitudes(samples, sample_rate));
+            estimate_key_scored(&chroma, correlation)
         }
     }
 }
@@ -375,20 +405,19 @@ pub fn key_from_pcm(
 ///
 /// Returns `None` when there is no tonal content to work with at all, rather
 /// than naming a key nothing supports.
-pub fn estimate_key(chroma: &Chromagram, profile: KeyProfile) -> Option<KeyEstimate> {
+pub fn estimate_key(chroma: &Chromagram, profile: CorrelationProfile) -> Option<KeyEstimate> {
     estimate_key_scored(chroma, profile).map(|(est, _)| est)
 }
 
 /// As [`estimate_key`], also returning the factors behind the confidence.
 ///
 /// The diagnostic commands use this; the analysis path attaches it only when
-/// asked, so a normal payload stays free of the estimator's internals. The band
-/// scorer reads a [`BandChroma`] instead, so it gets `None` here.
+/// asked, so a normal payload stays free of the estimator's internals.
 pub fn estimate_key_scored(
     chroma: &Chromagram,
-    profile: KeyProfile,
+    profile: CorrelationProfile,
 ) -> Option<(KeyEstimate, KeyScoring)> {
-    let (major, minor) = profile.profiles()?;
+    let (major, minor) = profile.profiles();
     if chroma.seconds < MIN_CHROMA_SECS {
         return None;
     }
@@ -427,7 +456,10 @@ pub fn estimate_key_scored(
         structure,
         coverage,
     };
-    Some((finish(&scores, tonic, is_minor, &scoring, profile), scoring))
+    Some((
+        finish(&scores, tonic, is_minor, &scoring, profile.into()),
+        scoring,
+    ))
 }
 
 /// Estimate the key with the band scorer.
@@ -965,7 +997,7 @@ mod tests {
         let stft = Stft::for_chroma(SR);
         let best = |sig: &[f32]| {
             let c = chromagram(&stft.magnitudes(sig, SR));
-            estimate_key_scored(&c, KeyProfile::Edm)
+            estimate_key_scored(&c, CorrelationProfile::Edm)
                 .map(|(_, s)| s.correlation)
                 .unwrap_or(0.0)
         };
@@ -1017,7 +1049,7 @@ mod tests {
                         .collect();
                     let chroma = chromagram(&stft.magnitudes(&sig, sr));
                     assert!(
-                        estimate_key_scored(&chroma, KeyProfile::Edm).is_none(),
+                        estimate_key_scored(&chroma, CorrelationProfile::Edm).is_none(),
                         "{sr}Hz, {secs}s, seed {seed} produced a key"
                     );
                 }
@@ -1039,7 +1071,7 @@ mod tests {
                 let sig = testsig::chord_progression(9, Quality::Minor, secs, sr);
                 let chroma = chromagram(&stft.magnitudes(&sig, sr));
                 (
-                    estimate_key_scored(&chroma, KeyProfile::Edm).is_some(),
+                    estimate_key_scored(&chroma, CorrelationProfile::Edm).is_some(),
                     chroma.seconds,
                 )
             };
@@ -1099,13 +1131,6 @@ mod tests {
                 .collect();
             assert_eq!(keys[0], keys[1]);
         }
-    }
-
-    #[test]
-    fn the_band_scorer_is_not_a_chromagram_scorer() {
-        let sig = testsig::chord_progression(9, Quality::Minor, 8.0, SR);
-        let chroma = chromagram(&Stft::for_chroma(SR).magnitudes(&sig, SR));
-        assert!(estimate_key_scored(&chroma, KeyProfile::Bands).is_none());
     }
 
     #[test]

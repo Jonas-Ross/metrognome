@@ -14,7 +14,7 @@ use crate::dsp::Spectrogram;
 ///
 /// Octaves through the bass and middle, where the root and the chord tones
 /// live, then one wide band above C6 for leads and upper partials.
-const BANDS: [(u8, u8); 5] = [(24, 36), (36, 48), (48, 60), (60, 72), (72, 96)];
+pub const BANDS: [(u8, u8); 5] = [(24, 36), (36, 48), (48, 60), (60, 72), (72, 96)];
 
 /// Log-frequency grid resolution, in bins per semitone.
 ///
