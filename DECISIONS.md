@@ -1106,7 +1106,7 @@ tests or DSP changes that `validate` measures better than a read-through does.
 So a `gate` job decides, from the files a PR touches
 (`scripts/risk-tier.sh`), whether it can merge without him:
 
-- **auto**: Markdown other than agent instructions, `crates/*/tests/`,
+- **auto**: Markdown other than agent instructions and `REVIEW.md`, `crates/*/tests/`,
   `Cargo.lock`, `rust-toolchain.toml`. Merges once CI and the Claude review pass.
 - **validate**: the analysis path (`dsp`, `tempo`, `key`, `decode`, and an
   `ALGORITHM_VERSION`-only edit to `lib.rs`), but not `pipeline`, which also
@@ -1122,7 +1122,7 @@ So a `gate` job decides, from the files a PR touches
 Three rules keep the gate honest, and each of them costs something:
 
 **The gate's own inputs are `jonas`.** Workflows, `scripts/`, agent
-instructions at any depth (`CLAUDE.md`, `AGENTS.md`, `.claude/`), `validate.rs`
+instructions at any depth (`CLAUDE.md`, `AGENTS.md`, `REVIEW.md`, `.claude/`), `validate.rs`
 and `testsig.rs` are the grader; a PR that could edit its grader and then pass
 it has graded itself. So "CI config merges on its own" from the
 original proposal does not hold for this repo: every CI change needs Jonas. The
