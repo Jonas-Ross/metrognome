@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       sha256: ${{ steps.package.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -89,7 +89,7 @@ jobs:
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for tap token
         id: token
         run: |
@@ -99,7 +99,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.token.outputs.present
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Jonas-Ross/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
