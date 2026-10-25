@@ -153,8 +153,8 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
 
     let mut samples: Vec<f32> = Vec::new();
     let mut planes: Vec<Vec<f32>> = Vec::new();
-    // symphonia 0.5 clamped MP3 synthesis and 0.6 does not; the key weights
-    // were fitted on clamped MP3s, and AAC was never clamped.
+    // Matches the clamped MP3 output the key weights were fitted on; AAC was
+    // never clamped.
     let clamp = params.codec == CODEC_ID_MP3;
     let mut truncated = false;
     let mut sample_rate = params.sample_rate.unwrap_or(0);
@@ -164,12 +164,11 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         let packet = match format.next_packet() {
             Ok(Some(p)) => p,
             Ok(None) => break,
-            // A stream cut short keeps what decoded before the cut.
+            // Some readers still end a stream this way rather than with Ok(None).
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                tracing::warn!("stream ended mid-packet; analyzing what decoded");
-                break;
+                break
             }
             Err(symphonia::core::errors::Error::ResetRequired) => {
                 // Track list changed mid-stream; previews never do this, and
@@ -386,16 +385,23 @@ mod tests {
         // White noise boosted 10 dB past full scale, so synthesis overshoots.
         let pcm = decode_bytes(HOT_MP3.to_vec(), Some("mp3")).expect("decode");
         assert!(pcm.duration_secs() > 0.9, "got {}", pcm.duration_secs());
-        assert!(pcm.stats().peak <= 1.0, "peak {}", pcm.stats().peak);
+        // Exactly full scale: the fixture overshoots, and the clamp holds it.
+        assert_eq!(pcm.stats().peak, 1.0);
     }
 
     #[test]
     fn an_mp3_behind_a_large_id3_tag_still_probes() {
         // Embedded cover art routinely passes the probe's 1 MB scan depth.
-        let pad = 1_500_000u32;
+        let mut apic = b"\0image/jpeg\0\x03\0".to_vec();
+        apic.resize(1_500_000, 0xAB);
+        let mut frame = b"APIC".to_vec();
+        frame.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&apic);
+        let size = frame.len() as u32;
         let mut bytes = b"ID3\x03\x00\x00".to_vec();
-        bytes.extend((0..4).rev().map(|i| ((pad >> (7 * i)) & 0x7f) as u8));
-        bytes.resize(bytes.len() + pad as usize, 0);
+        bytes.extend((0..4).rev().map(|i| ((size >> (7 * i)) & 0x7f) as u8));
+        bytes.extend_from_slice(&frame);
         bytes.extend_from_slice(HOT_MP3);
         let pcm = decode_bytes(bytes, Some("mp3")).expect("decode");
         assert!(pcm.duration_secs() > 0.9, "got {}", pcm.duration_secs());
