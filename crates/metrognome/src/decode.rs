@@ -7,10 +7,10 @@
 use std::io::Cursor;
 
 use symphonia::core::audio::GenericAudioBufferRef;
-use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
@@ -136,13 +136,14 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         )
         .map_err(|e| Error::Decode(format!("probe: {e}")))?;
 
-    let track = format
-        .first_track_known_codec(TrackType::Audio)
+    let (track_id, params) = format
+        .tracks()
+        .iter()
+        .find_map(|t| match &t.codec_params {
+            Some(CodecParameters::Audio(p)) if p.codec != CODEC_ID_NULL_AUDIO => Some((t.id, p)),
+            _ => None,
+        })
         .ok_or_else(|| Error::Decode("no decodable audio track".into()))?;
-    let track_id = track.id;
-    let Some(CodecParameters::Audio(params)) = &track.codec_params else {
-        return Err(Error::Decode("no decodable audio track".into()));
-    };
 
     // Gapless is on by default: encoder priming is trimmed, not analyzed.
     let mut decoder = symphonia::default::get_codecs()
