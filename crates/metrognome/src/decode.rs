@@ -6,12 +6,13 @@
 
 use std::io::Cursor;
 
-use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use crate::error::{Error, Result};
 
@@ -126,39 +127,39 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions {
-                enable_gapless: true,
-                ..Default::default()
-            },
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|e| Error::Decode(format!("probe: {e}")))?;
 
-    let mut format = probed.format;
     let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .first_track_known_codec(TrackType::Audio)
         .ok_or_else(|| Error::Decode("no decodable audio track".into()))?;
     let track_id = track.id;
+    let Some(CodecParameters::Audio(params)) = &track.codec_params else {
+        return Err(Error::Decode("no decodable audio track".into()));
+    };
 
+    // Gapless is on by default: encoder priming is trimmed, not analyzed.
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(|e| Error::Decode(format!("codec: {e}")))?;
 
     let mut samples: Vec<f32> = Vec::new();
+    let mut planes: Vec<Vec<f32>> = Vec::new();
     let mut truncated = false;
-    let mut sample_rate = track.codec_params.sample_rate.unwrap_or(0);
-    let mut source_channels = track.codec_params.channels.map_or(0, |c| c.count() as u16);
+    let mut sample_rate = params.sample_rate.unwrap_or(0);
+    let mut source_channels = params.channels.as_ref().map_or(0, |c| c.count() as u16);
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            // Symphonia signals clean end-of-stream as an UnexpectedEof io error.
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            // A stream cut short keeps what decoded before the cut.
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -171,19 +172,19 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
             }
             Err(e) => return Err(Error::Decode(format!("demux: {e}"))),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(buf) => {
-                let spec = *buf.spec();
+                let spec = buf.spec();
                 if sample_rate == 0 {
-                    sample_rate = spec.rate;
+                    sample_rate = spec.rate();
                 }
                 if source_channels == 0 {
-                    source_channels = spec.channels.count() as u16;
+                    source_channels = spec.channels().count() as u16;
                 }
-                append_mono(&buf, &mut samples);
+                append_mono(&buf, &mut planes, &mut samples);
                 if sample_rate > 0 {
                     let cap = (MAX_DECODE_SECS * f64::from(sample_rate)) as usize;
                     if samples.len() >= cap {
@@ -223,56 +224,25 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
     })
 }
 
-/// Downmix any symphonia buffer variant into `out` as mono `f32`.
+/// Downmix a decoded buffer of any sample format into `out` as mono `f32`.
 ///
 /// Averaging rather than summing keeps the result inside [-1, 1] regardless of
 /// channel count, so downstream thresholds (silence, peak) stay meaningful.
-fn append_mono(buf: &AudioBufferRef<'_>, out: &mut Vec<f32>) {
-    macro_rules! mix {
-        ($b:expr, $conv:expr) => {{
-            let b = $b;
-            let channels = b.spec().channels.count();
-            let frames = b.frames();
-            out.reserve(frames);
-            if channels == 0 {
-                return;
-            }
-            for i in 0..frames {
-                let mut acc = 0.0f32;
-                for ch in 0..channels {
-                    #[allow(clippy::redundant_closure_call)]
-                    {
-                        acc += ($conv)(b.chan(ch)[i]);
-                    }
-                }
-                // Float WAV can carry NaN and Inf. Zero is silence; a
-                // non-finite sample is a poisoned analysis.
-                let v = acc / channels as f32;
-                out.push(if v.is_finite() { v } else { 0.0 });
-            }
-        }};
+/// `planes` is scratch space reused across packets.
+fn append_mono(buf: &GenericAudioBufferRef<'_>, planes: &mut Vec<Vec<f32>>, out: &mut Vec<f32>) {
+    buf.copy_to_vecs_planar(planes);
+    let channels = planes.len();
+    if channels == 0 {
+        return;
     }
-
-    match buf {
-        AudioBufferRef::F32(b) => mix!(b, |v: f32| v),
-        AudioBufferRef::F64(b) => mix!(b, |v: f64| v as f32),
-        AudioBufferRef::S32(b) => mix!(b, |v: i32| v as f32 / i32::MAX as f32),
-        AudioBufferRef::S24(b) => {
-            mix!(b, |v: symphonia::core::sample::i24| v.inner() as f32
-                / 8_388_608.0)
-        }
-        AudioBufferRef::S16(b) => mix!(b, |v: i16| f32::from(v) / 32_768.0),
-        AudioBufferRef::S8(b) => mix!(b, |v: i8| f32::from(v) / 128.0),
-        AudioBufferRef::U32(b) => {
-            mix!(b, |v: u32| (v as f64 / 2_147_483_648.0 - 1.0) as f32)
-        }
-        AudioBufferRef::U24(b) => {
-            mix!(b, |v: symphonia::core::sample::u24| (v.inner() as f32
-                / 8_388_608.0)
-                - 1.0)
-        }
-        AudioBufferRef::U16(b) => mix!(b, |v: u16| (f32::from(v) / 32_768.0) - 1.0),
-        AudioBufferRef::U8(b) => mix!(b, |v: u8| (f32::from(v) / 128.0) - 1.0),
+    let frames = buf.frames();
+    out.reserve(frames);
+    for i in 0..frames {
+        let acc: f32 = planes.iter().map(|p| p[i]).sum();
+        // Float WAV can carry NaN and Inf. Zero is silence; a
+        // non-finite sample is a poisoned analysis.
+        let v = acc / channels as f32;
+        out.push(if v.is_finite() { v } else { 0.0 });
     }
 }
 
