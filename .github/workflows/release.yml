@@ -59,7 +59,7 @@ jobs:
           "$bin" selftest > /dev/null
       - name: Render formula
         run: scripts/render-formula.sh "${{ steps.version.outputs.version }}" "${{ steps.package.outputs.sha256 }}" | ruby -c
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: |
