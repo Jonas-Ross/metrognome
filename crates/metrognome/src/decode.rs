@@ -7,6 +7,7 @@
 use std::io::Cursor;
 
 use symphonia::core::audio::GenericAudioBufferRef;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_MP3;
 use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
@@ -145,13 +146,16 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
         })
         .ok_or_else(|| Error::Decode("no decodable audio track".into()))?;
 
-    // Gapless is on by default: encoder priming is trimmed, not analyzed.
+    // Trims MP3 encoder delay; isomp4 ignores edit lists, so AAC priming stays.
     let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default().gapless(true))
         .map_err(|e| Error::Decode(format!("codec: {e}")))?;
 
     let mut samples: Vec<f32> = Vec::new();
     let mut planes: Vec<Vec<f32>> = Vec::new();
+    // symphonia 0.5 clamped MP3 synthesis and 0.6 does not; the key weights
+    // were fitted on clamped MP3s, and AAC was never clamped.
+    let clamp = params.codec == CODEC_ID_MP3;
     let mut truncated = false;
     let mut sample_rate = params.sample_rate.unwrap_or(0);
     let mut source_channels = params.channels.as_ref().map_or(0, |c| c.count() as u16);
@@ -164,7 +168,8 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
-                break
+                tracing::warn!("stream ended mid-packet; analyzing what decoded");
+                break;
             }
             Err(symphonia::core::errors::Error::ResetRequired) => {
                 // Track list changed mid-stream; previews never do this, and
@@ -185,7 +190,7 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
                 if source_channels == 0 {
                     source_channels = spec.channels().count() as u16;
                 }
-                append_mono(&buf, &mut planes, &mut samples);
+                append_mono(&buf, clamp, &mut planes, &mut samples);
                 if sample_rate > 0 {
                     let cap = (MAX_DECODE_SECS * f64::from(sample_rate)) as usize;
                     if samples.len() >= cap {
@@ -230,20 +235,33 @@ pub fn decode_bytes(bytes: Vec<u8>, extension_hint: Option<&str>) -> Result<Pcm>
 /// Averaging rather than summing keeps the result inside [-1, 1] regardless of
 /// channel count, so downstream thresholds (silence, peak) stay meaningful.
 /// `planes` is scratch space reused across packets.
-fn append_mono(buf: &GenericAudioBufferRef<'_>, planes: &mut Vec<Vec<f32>>, out: &mut Vec<f32>) {
+fn append_mono(
+    buf: &GenericAudioBufferRef<'_>,
+    clamp: bool,
+    planes: &mut Vec<Vec<f32>>,
+    out: &mut Vec<f32>,
+) {
     buf.copy_to_vecs_planar(planes);
-    let channels = planes.len();
-    if channels == 0 {
-        return;
+    if clamp {
+        for plane in planes.iter_mut() {
+            plane.iter_mut().for_each(|v| *v = v.clamp(-1.0, 1.0));
+        }
     }
-    let frames = buf.frames();
-    out.reserve(frames);
-    for i in 0..frames {
-        let acc: f32 = planes.iter().map(|p| p[i]).sum();
+    let Some((first, rest)) = planes.split_first() else {
+        return;
+    };
+    let start = out.len();
+    out.extend_from_slice(first);
+    let mixed = &mut out[start..];
+    for plane in rest.iter() {
+        mixed.iter_mut().zip(plane).for_each(|(m, v)| *m += v);
+    }
+    let channels = 1 + rest.len() as u32;
+    for m in mixed {
         // Float WAV can carry NaN and Inf. Zero is silence; a
         // non-finite sample is a poisoned analysis.
-        let v = acc / channels as f32;
-        out.push(if v.is_finite() { v } else { 0.0 });
+        let v = *m / channels as f32;
+        *m = if v.is_finite() { v } else { 0.0 };
     }
 }
 
@@ -314,6 +332,73 @@ mod tests {
             pcm.stats().peak < 0.01,
             "expected cancellation to near-zero"
         );
+    }
+
+    /// A WAV of `frames` copies of one little-endian sample, in any PCM layout.
+    fn wav_of(format_tag: u16, bits: u16, sample: &[u8], frames: usize) -> Vec<u8> {
+        let data_len = (sample.len() * frames) as u32;
+        let block = bits / 8;
+        let mut w = Vec::new();
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data_len).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&format_tag.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes());
+        w.extend_from_slice(&8_000u32.to_le_bytes());
+        w.extend_from_slice(&(8_000 * u32::from(block)).to_le_bytes());
+        w.extend_from_slice(&block.to_le_bytes());
+        w.extend_from_slice(&bits.to_le_bytes());
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_len.to_le_bytes());
+        for _ in 0..frames {
+            w.extend_from_slice(sample);
+        }
+        w
+    }
+
+    #[test]
+    fn every_pcm_sample_format_scales_to_the_same_level() {
+        // Half scale in each layout the downmix used to convert by hand.
+        let cases: [(&str, u16, u16, Vec<u8>); 5] = [
+            ("u8", 1, 8, vec![192]),
+            ("s16", 1, 16, 16_384i16.to_le_bytes().to_vec()),
+            ("s24", 1, 24, 4_194_304i32.to_le_bytes()[..3].to_vec()),
+            ("s32", 1, 32, (1i32 << 30).to_le_bytes().to_vec()),
+            ("f32", 3, 32, 0.5f32.to_le_bytes().to_vec()),
+        ];
+        for (name, tag, bits, sample) in cases {
+            let pcm = decode_bytes(wav_of(tag, bits, &sample, 800), Some("wav"))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(pcm.samples.len(), 800, "{name}");
+            assert!(
+                pcm.samples.iter().all(|&v| (v - 0.5).abs() < 1e-6),
+                "{name}: got {}",
+                pcm.samples[0]
+            );
+        }
+    }
+
+    const HOT_MP3: &[u8] = include_bytes!("../tests/fixtures/hot_noise.mp3");
+
+    #[test]
+    fn mp3_output_is_clamped_like_symphonia_0_5() {
+        // White noise boosted 10 dB past full scale, so synthesis overshoots.
+        let pcm = decode_bytes(HOT_MP3.to_vec(), Some("mp3")).expect("decode");
+        assert!(pcm.duration_secs() > 0.9, "got {}", pcm.duration_secs());
+        assert!(pcm.stats().peak <= 1.0, "peak {}", pcm.stats().peak);
+    }
+
+    #[test]
+    fn an_mp3_behind_a_large_id3_tag_still_probes() {
+        // Embedded cover art routinely passes the probe's 1 MB scan depth.
+        let pad = 1_500_000u32;
+        let mut bytes = b"ID3\x03\x00\x00".to_vec();
+        bytes.extend((0..4).rev().map(|i| ((pad >> (7 * i)) & 0x7f) as u8));
+        bytes.resize(bytes.len() + pad as usize, 0);
+        bytes.extend_from_slice(HOT_MP3);
+        let pcm = decode_bytes(bytes, Some("mp3")).expect("decode");
+        assert!(pcm.duration_secs() > 0.9, "got {}", pcm.duration_secs());
     }
 
     #[test]
